@@ -6,7 +6,7 @@ const { fork } = require('child_process');
 // 常量
 // ============================================================
 const APP_NAME = '个人收支预算管家';
-const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173';
+const DEV_SERVER_URL = process.env.VITE_DEV_SERVER_URL || 'http://localhost:8001';
 const IS_DEV = process.env.NODE_ENV === 'development' || !!process.env.VITE_DEV_SERVER_URL;
 
 // 后端服务端口：开发模式固定 3001，生产模式随机可用端口

@@ -1,24 +1,20 @@
-// electron-builder.yml — Electron 打包配置
 appId: com.budget.personal-finance
 productName: 个人收支预算管家
 copyright: Copyright © 2026
 
-extraMetadata:
-  main: main.cjs
-
 directories:
   output: release
-  buildResources: assets
 
 files:
   - dist/**/*
   - server/**/*
   - electron/**/*
+  - main.cjs
   - package.json
+  - "!node_modules/**/*"
 
-extraResources:
-  - from: assets/
-    to: assets/
+asarUnpack:
+  - node_modules/better-sqlite3/**/*
 
 win:
   target:
@@ -26,7 +22,6 @@ win:
       arch: [x64]
     - target: portable
       arch: [x64]
-  icon: assets/icon.ico
   artifactName: ${productName}-${version}-setup.${ext}
 
 nsis:
