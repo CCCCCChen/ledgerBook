@@ -41,8 +41,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import { logger } from '@lark-apaas/client-toolkit-lite';
-import type { ITransaction, TransactionCategory } from '@/types/finance';
+import type { IAccount, IBudget, ITransaction, TransactionCategory } from '@/types/finance';
 import { DEFAULT_CATEGORIES, ACCOUNT_TYPE_LABELS, MOCK_TRANSACTIONS, MOCK_ACCOUNTS, MOCK_BUDGETS } from '@/data/finance';
 import { getItem, setItem, STORAGE_KEYS, exportAllData, importAllData } from '@/lib/storage';
 
@@ -85,12 +84,12 @@ function loadTransactions(): ITransaction[] {
 
 export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<ITransaction[]>(() => loadTransactions());
-  const [accounts, setAccounts] = useState(() => {
-    const stored = getItem(STORAGE_KEYS.accounts);
+  const [accounts, setAccounts] = useState<IAccount[]>(() => {
+    const stored = getItem<IAccount>(STORAGE_KEYS.accounts);
     return stored.length > 0 ? stored : MOCK_ACCOUNTS;
   });
-  const [budgets, setBudgets] = useState(() => {
-    const stored = getItem(STORAGE_KEYS.budgets);
+  const [budgets, setBudgets] = useState<IBudget[]>(() => {
+    const stored = getItem<IBudget>(STORAGE_KEYS.budgets);
     return stored.length > 0 ? stored : MOCK_BUDGETS;
   });
 
@@ -125,11 +124,12 @@ export default function TransactionsPage() {
 
   // Refresh accounts & budgets from storage
   const refreshAccounts = useCallback(() => {
-    const stored = getItem(STORAGE_KEYS.accounts);
+    const stored = getItem<IAccount>(STORAGE_KEYS.accounts);
     setAccounts(stored.length > 0 ? stored : MOCK_ACCOUNTS);
   }, []);
+  
   const refreshBudgets = useCallback(() => {
-    const stored = getItem(STORAGE_KEYS.budgets);
+    const stored = getItem<IBudget>(STORAGE_KEYS.budgets);
     setBudgets(stored.length > 0 ? stored : MOCK_BUDGETS);
   }, []);
 
@@ -173,15 +173,15 @@ export default function TransactionsPage() {
 
   // Helpers
   const getAccountName = (id: string) => {
-    const acc = accounts.find((a: { id: string }) => a.id === id);
+    const acc = accounts.find((a) => a.id === id);
     return acc ? acc.name : '未知账户';
   };
   const getAccountType = (id: string) => {
-    const acc = accounts.find((a: { id: string }) => a.id === id);
+    const acc = accounts.find((a) => a.id === id);
     return acc ? ACCOUNT_TYPE_LABELS[acc.type as keyof typeof ACCOUNT_TYPE_LABELS] || acc.type : '';
   };
   const getBudgetName = (id: string) => {
-    const b = budgets.find((b: { id: string }) => b.id === id);
+    const b = budgets.find((b) => b.id === id);
     return b ? b.name : '';
   };
 

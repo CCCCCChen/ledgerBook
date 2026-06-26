@@ -404,9 +404,9 @@ export default function BudgetsPage() {
                       <div className="space-y-1.5">
                         <Progress
                           value={Math.min(budget.rate, 100)}
-                          className="h-2"
-                          indicatorClassName={getProgressColor(budget.rate)}
+                          className="h-2 [&>*]:bg-primary"
                         />
+
                         <div className="flex items-center justify-between text-xs text-muted-foreground">
                           <span>已使用 ¥{budget.used.toLocaleString()}</span>
                           <Badge variant={getBadgeVariant(budget.rate)} className="text-xs">
