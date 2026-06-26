@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const path = require('path');
+const fs = require('fs');
 const { initDatabase } = require('./db.cjs');
 const accountsRouter = require('./routes/accounts.cjs');
 const transactionsRouter = require('./routes/transactions.cjs');
@@ -44,7 +45,11 @@ async function createServer({ dbPath, port, staticDir }) {
   // 生产模式：托管前端静态文件
   if (staticDir) {
     app.use(express.static(staticDir));
-    app.get('*', (_req, res) => {
+    app.use((req, res, next) => {
+      if (req.path.startsWith('/api/')) {
+        next();
+        return;
+      }
       res.sendFile(path.join(staticDir, 'index.html'));
     });
   }

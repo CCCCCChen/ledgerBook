@@ -5,15 +5,17 @@ copyright: Copyright © 2026
 directories:
   output: release
 
+asar: false
+
 files:
   - dist/**/*
   - server/**/*
   - electron/**/*
   - main.cjs
   - package.json
-  - "!node_modules/**/*"
 
 asarUnpack:
+  - "**/*.node"
   - node_modules/better-sqlite3/**/*
 
 win:

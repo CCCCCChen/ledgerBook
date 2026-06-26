@@ -8,6 +8,8 @@ dist/
 build/
 */build/
 release/
+release-debug/
+release-fixed*/
 
 # Environment files
 .env.local

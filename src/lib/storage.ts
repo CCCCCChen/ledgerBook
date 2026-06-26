@@ -1,8 +1,5 @@
 // EXPORTS: getItem, setItem, removeItem, getAllKeys, clearAll, exportAllData, importAllData
 
-import { scopedStorage } from '@lark-apaas/client-toolkit-lite';
-import { logger } from '@lark-apaas/client-toolkit-lite';
-
 const STORAGE_KEYS = {
   transactions: '__budget_transactions',
   budgets: '__budget_budgets',
@@ -11,31 +8,41 @@ const STORAGE_KEYS = {
 
 type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];
 
+function getStorageBackend(): Storage | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage;
+  } catch (error) {
+    console.error('storage.getStorageBackend failed:', String(error));
+    return null;
+  }
+}
+
 function getItem<T>(key: StorageKey): T[] {
   try {
-    const raw = scopedStorage.getItem(key);
+    const raw = getStorageBackend()?.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
     return Array.isArray(parsed) ? parsed : [];
   } catch (error) {
-    logger.error('storage.getItem failed:', String(error));
+    console.error('storage.getItem failed:', String(error));
     return [];
   }
 }
 
 function setItem<T>(key: StorageKey, data: T[]): void {
   try {
-    scopedStorage.setItem(key, JSON.stringify(data));
+    getStorageBackend()?.setItem(key, JSON.stringify(data));
   } catch (error) {
-    logger.error('storage.setItem failed:', String(error));
+    console.error('storage.setItem failed:', String(error));
   }
 }
 
 function removeItem(key: StorageKey): void {
   try {
-    scopedStorage.removeItem(key);
+    getStorageBackend()?.removeItem(key);
   } catch (error) {
-    logger.error('storage.removeItem failed:', String(error));
+    console.error('storage.removeItem failed:', String(error));
   }
 }
 
@@ -46,10 +53,10 @@ function getAllKeys(): StorageKey[] {
 function clearAll(): void {
   try {
     for (const key of getAllKeys()) {
-      scopedStorage.removeItem(key);
+      getStorageBackend()?.removeItem(key);
     }
   } catch (error) {
-    logger.error('storage.clearAll failed:', String(error));
+    console.error('storage.clearAll failed:', String(error));
   }
 }
 
@@ -83,7 +90,7 @@ function exportAllData(): void {
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
   } catch (error) {
-    logger.error('storage.exportAllData failed:', String(error));
+    console.error('storage.exportAllData failed:', String(error));
   }
 }
 
@@ -108,7 +115,7 @@ function importAllData(jsonString: string): boolean {
 
     return true;
   } catch (error) {
-    logger.error('storage.importAllData failed:', String(error));
+    console.error('storage.importAllData failed:', String(error));
     return false;
   }
 }

@@ -1,7 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, type FormEvent } from 'react';
 import { Plus, Edit, Trash2, AlertTriangle, PiggyBank, Download, Upload } from 'lucide-react';
 import { toast } from 'sonner';
-import { logger } from '@lark-apaas/client-toolkit-lite';
 
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';

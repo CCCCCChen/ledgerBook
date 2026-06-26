@@ -13,7 +13,7 @@
     "precommit": "npm run lint",
     "prepare": "node scripts/setup-git-hooks.mjs",
     "electron:dev": "concurrently -k \"npm:dev\" \"wait-on http://localhost:8001 && cross-env VITE_DEV_SERVER_URL=http://localhost:8001 NODE_ENV=development electron .\"",
-    "electron:build": "vite build --outDir dist",
+    "electron:build": "vite build --base ./ --outDir dist && node scripts/prepare-electron-dist.mjs",
     "electron:rebuild": "electron-rebuild -f -w better-sqlite3",
     "electron:build:win": "npm run electron:build && npm run electron:rebuild && electron-builder --win --x64",
     "electron:build:mac": "npm run electron:build && npm run electron:rebuild && electron-builder --mac",
