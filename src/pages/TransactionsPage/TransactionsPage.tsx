@@ -109,7 +109,7 @@ export default function TransactionsPage() {
   const [submitting, setSubmitting] = useState(false);
 
   // Delete confirm
-  const [deleteTarget, setDeleteTarget] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<ITransaction | null>(null);
 
   // Import
   const [importing, setImporting] = useState(false);
@@ -313,20 +313,46 @@ export default function TransactionsPage() {
 
   };
 
-  const handleDelete = async () => {
+  const handleDelete = async (scope: 'single' | 'plan' = 'single') => {
     if (!deleteTarget) return;
     try {
-      const ok = await deleteTransaction(deleteTarget);
+      const ok = await deleteTransaction(deleteTarget.id, scope);
       if (ok) {
         toast.success('交易记录已删除');
         await refreshTransactions();
       } else {
-        toast.error('删除失败');
+        toast.error(scope === 'plan' ? '删除整组分期失败（可能已到达第一期日期）' : '删除失败');
       }
     } catch (error) {
       toast.error(`删除失败：${String(error)}`);
     }
     setDeleteTarget(null);
+  };
+
+  const currentPlanStarted = useMemo(() => {
+    if (!editingMeta?.installmentPlanId) return false;
+    const today = new Date().toISOString().slice(0, 10);
+    return transactions.some((t) => t.installmentPlanId === editingMeta.installmentPlanId && t.date <= today);
+  }, [editingMeta?.installmentPlanId, transactions]);
+
+  const deleteInstallmentPlan = async () => {
+    if (!editingId) return;
+    if (!editingMeta?.installmentPlanId) return;
+    if (currentPlanStarted) {
+      toast.error('已到达/超过第一期日期，禁止整组删除分期计划');
+      return;
+    }
+    const ok = await deleteTransaction(editingId, 'plan');
+    if (ok) {
+      toast.success('分期计划已删除');
+      await refreshTransactions();
+      setDialogOpen(false);
+      setEditingId(null);
+      setEditingMeta(null);
+      setForm(EMPTY_FORM);
+      return;
+    }
+    toast.error('删除整组分期失败');
   };
 
   const handleExport = async () => {
@@ -722,7 +748,7 @@ export default function TransactionsPage() {
                               variant="ghost"
                               size="icon"
                               className="h-8 w-8 text-destructive hover:text-destructive"
-                              onClick={() => setDeleteTarget(txn.id)}
+                              onClick={() => setDeleteTarget(txn)}
                               aria-label="删除"
                             >
                               <Trash2 className="size-3.5" />
@@ -982,7 +1008,17 @@ export default function TransactionsPage() {
                 </div>
               )}
             </div>
-            <DialogFooter>
+            <DialogFooter className="gap-2 sm:gap-0">
+              {editingMeta?.transactionType === 'installment_bill' && editingMeta.installmentPlanId && (
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={() => void deleteInstallmentPlan()}
+                  disabled={currentPlanStarted}
+                >
+                  删除整组分期
+                </Button>
+              )}
               <Button
                 type="button"
                 variant="outline"
@@ -1014,7 +1050,10 @@ export default function TransactionsPage() {
           </AlertDialogHeader>
           <AlertDialogFooter>
             <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction onClick={handleDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
+            <AlertDialogAction
+              onClick={() => void handleDelete('single')}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
               删除
             </AlertDialogAction>
           </AlertDialogFooter>

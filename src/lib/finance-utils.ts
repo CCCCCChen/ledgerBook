@@ -53,7 +53,7 @@ export function getBudgetCycleWindow(budget: IBudget, refDate = new Date()): Bud
   if (ref < anchor) {
     return { start: budget.startDate, end: budget.startDate };
   }
-
+/*
   if (budget.cycleType === 'weekly' || (budget.cycleType === 'custom' && budget.cycleDays)) {
     const cycleDays = budget.cycleType === 'weekly' ? 7 : budget.cycleDays!;
     const diffDays = Math.floor((ref.getTime() - anchor.getTime()) / 86400000);
@@ -62,6 +62,37 @@ export function getBudgetCycleWindow(budget: IBudget, refDate = new Date()): Bud
     const end = addDays(start, cycleDays - 1);
     return { start: formatISODate(start), end: formatISODate(end) };
   }
+*/
+  if (budget.cycleType === 'weekly' || (budget.cycleType === 'custom' && budget.cycleDays)) {
+    if (budget.cycleType === 'weekly') {
+      // 1. 获取当前参考日所属周的周一
+      const refDay = ref.getDay();
+      const mondayOffset = refDay === 0 ? -6 : 1 - refDay;
+      const currentMonday = addDays(ref, mondayOffset);
+      
+      // 2. 计算预算起始日所属的周一（作为新锚点）
+      const anchorDay = anchor.getDay();
+      const anchorMondayOffset = anchorDay === 0 ? -6 : 1 - anchorDay;
+      const anchorMonday = addDays(anchor, anchorMondayOffset);
+      
+      // 3. 计算两者之间的完整周数差
+      const diffDays = Math.floor((currentMonday.getTime() - anchorMonday.getTime()) / 86400000);
+      const cycleIndex = Math.floor(diffDays / 7);
+      
+      // 4. 推算当前周期的起止日期
+      const start = addDays(anchorMonday, cycleIndex * 7);
+      const end = addDays(start, 6);
+      return { start: formatISODate(start), end: formatISODate(end) };
+    } 
+  
+  // custom 周期保持原逻辑不变
+  const cycleDays = budget.cycleDays!;
+  const diffDays = Math.floor((ref.getTime() - anchor.getTime()) / 86400000);
+  const cycleIndex = Math.floor(diffDays / cycleDays);
+  const start = addDays(anchor, cycleIndex * cycleDays);
+  const end = addDays(start, cycleDays - 1);
+  return { start: formatISODate(start), end: formatISODate(end) };
+}
 
   if (budget.cycleType === 'monthly') {
     const anchorDay = anchor.getDate();
@@ -111,10 +142,13 @@ export function listBudgetSettlementsForMonth(
   const results: BudgetSettlementItem[] = [];
 
   budgets.forEach((budget) => {
+    const budgetTransactions = transactions.filter((t) => t.amount < 0 && t.budgetId === budget.id);
     if (budget.cycleType === 'once') {
       if (!budget.endDate || budget.endDate < today || budget.endDate > monthEnd) return;
       const window = { start: budget.startDate, end: budget.endDate };
-      const used = getBudgetUsedInWindow(budget, transactions, window);
+      const used = budgetTransactions
+        .filter((t) => t.date >= window.start && t.date <= window.end)
+        .reduce((sum, t) => sum + Math.abs(t.amount), 0);
       results.push({
         budgetId: budget.id,
         budgetName: budget.name,
@@ -136,7 +170,9 @@ export function listBudgetSettlementsForMonth(
       const currentWindow = getBudgetCycleWindow(budget, cursor);
       if (!currentWindow) break;
       if (currentWindow.end >= today && currentWindow.end <= monthEnd) {
-        const used = getBudgetUsedInWindow(budget, transactions, currentWindow);
+        const used = budgetTransactions
+          .filter((t) => t.date >= currentWindow.start && t.date <= currentWindow.end)
+          .reduce((sum, t) => sum + Math.abs(t.amount), 0);
         results.push({
           budgetId: budget.id,
           budgetName: budget.name,
@@ -166,11 +202,14 @@ export function listBudgetSettlementsForRange(
   const results: BudgetSettlementItem[] = [];
 
   budgets.forEach((budget) => {
+    const budgetTransactions = transactions.filter((t) => t.amount < 0 && t.budgetId === budget.id);
     if (budget.cycleType === 'once') {
       if (!budget.endDate) return;
       if (budget.endDate < rangeFrom || budget.endDate > rangeTo) return;
       const window = { start: budget.startDate, end: budget.endDate };
-      const used = getBudgetUsedInWindow(budget, transactions, window);
+      const used = budgetTransactions
+        .filter((t) => t.date >= window.start && t.date <= window.end)
+        .reduce((sum, t) => sum + Math.abs(t.amount), 0);
       results.push({
         budgetId: budget.id,
         budgetName: budget.name,
@@ -194,7 +233,9 @@ export function listBudgetSettlementsForRange(
       const currentWindow = getBudgetCycleWindow(budget, cursor);
       if (!currentWindow) break;
       if (currentWindow.end >= rangeFrom && currentWindow.end <= rangeTo) {
-        const used = getBudgetUsedInWindow(budget, transactions, currentWindow);
+        const used = budgetTransactions
+          .filter((t) => t.date >= currentWindow.start && t.date <= currentWindow.end)
+          .reduce((sum, t) => sum + Math.abs(t.amount), 0);
         results.push({
           budgetId: budget.id,
           budgetName: budget.name,

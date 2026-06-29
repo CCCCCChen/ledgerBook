@@ -216,19 +216,15 @@ export async function createTransaction(data: CreateTransactionInput): Promise<I
     const txns = lsLoadTransactions();
     const now = new Date().toISOString();
     const planId = `inst-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const totalAmount = Math.abs(Number(data.amount || 0));
+    const perAmount = Math.abs(Number(data.amount || 0));
     const feeTotal = data.feeTotal != null ? Math.abs(Number(data.feeTotal)) : 0;
-    const totalWithFee = totalAmount + feeTotal;
-    const base = Math.round((totalWithFee / installmentCount) * 100) / 100;
-    const feeBase = feeTotal > 0 ? Math.round((feeTotal / installmentCount) * 100) / 100 : 0;
-    let allocated = 0;
+    const perFee = feeTotal > 0 ? Math.round((feeTotal / installmentCount) * 100) / 100 : 0;
     let feeAllocated = 0;
     for (let index = 0; index < installmentCount; index += 1) {
       const isLast = index === installmentCount - 1;
-      const amount = isLast ? Math.round((totalWithFee - allocated) * 100) / 100 : base;
-      allocated += amount;
-      const fee = feeTotal > 0 ? (isLast ? Math.round((feeTotal - feeAllocated) * 100) / 100 : feeBase) : 0;
+      const fee = feeTotal > 0 ? (isLast ? Math.round((feeTotal - feeAllocated) * 100) / 100 : perFee) : 0;
       feeAllocated += fee;
+      const amount = perAmount + fee;
       const date = new Date(`${data.date || now.slice(0, 10)}T00:00:00`);
       date.setMonth(date.getMonth() + index);
       txns.push({
@@ -303,6 +299,7 @@ export async function updateTransaction(id: string, data: UpdateTransactionInput
     const isBudgeted = data.isBudgeted != null ? Boolean(data.isBudgeted) : txns[idx].isBudgeted;
     const budgetId = isBudgeted ? (data.budgetId ?? txns[idx].budgetId) : undefined;
     const now = new Date().toISOString();
+    const baseDate = data.date ?? txns[idx].date;
     if (scope === 'plan' && planId) {
       txns.forEach((transaction) => {
         if (transaction.installmentPlanId !== planId) return;
@@ -310,6 +307,11 @@ export async function updateTransaction(id: string, data: UpdateTransactionInput
           transaction.installmentIndex && transaction.installmentTotal
             ? `（第 ${transaction.installmentIndex}/${transaction.installmentTotal} 期）`
             : '';
+        if (transaction.installmentIndex) {
+          const date = new Date(`${baseDate}T00:00:00`);
+          date.setMonth(date.getMonth() + (transaction.installmentIndex - 1));
+          transaction.date = date.toISOString().slice(0, 10);
+        }
         transaction.amount = amount;
         transaction.category = category;
         transaction.note = suffix ? `${baseNote || '分期账单'}${suffix}` : baseNote || '分期账单';
@@ -341,10 +343,10 @@ export async function updateTransaction(id: string, data: UpdateTransactionInput
   return txns[idx];
 }
 
-export async function deleteTransaction(id: string): Promise<boolean> {
+export async function deleteTransaction(id: string, scope: 'single' | 'plan' = 'single'): Promise<boolean> {
   if (isElectron()) {
     try {
-      await transactionsApi.remove(id);
+      await transactionsApi.remove(id, scope);
       return true;
     } catch {
       return false;
@@ -353,15 +355,33 @@ export async function deleteTransaction(id: string): Promise<boolean> {
   const current = lsLoadTransactions();
   const existing = current.find((t) => t.id === id);
   if (!existing) return false;
+  const todayISO = new Date().toISOString().slice(0, 10);
   const txns = current.filter((transaction) => {
     if (existing.pairedTransactionId) {
       return transaction.pairedTransactionId !== existing.pairedTransactionId;
     }
     if (existing.installmentPlanId) {
-      return transaction.installmentPlanId !== existing.installmentPlanId;
+      if (scope === 'plan') {
+        const firstDate = current
+          .filter((t) => t.installmentPlanId === existing.installmentPlanId)
+          .map((t) => t.date)
+          .sort()[0];
+        if (firstDate && firstDate <= todayISO) {
+          return true;
+        }
+        return transaction.installmentPlanId !== existing.installmentPlanId;
+      }
+      return transaction.id !== id;
     }
     return transaction.id !== id;
   });
+  if (existing.installmentPlanId && scope === 'plan') {
+    const firstDate = current
+      .filter((t) => t.installmentPlanId === existing.installmentPlanId)
+      .map((t) => t.date)
+      .sort()[0];
+    if (firstDate && firstDate <= todayISO) return false;
+  }
   lsSaveTransactions(txns);
   return true;
 }

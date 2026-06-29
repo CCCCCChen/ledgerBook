@@ -53,7 +53,8 @@ export const transactionsApi = {
   get: (id: string) => api.get<{ success: boolean; data: ITransaction }>(`/api/transactions/${id}`),
   create: (data: CreateTransactionInput) => api.post<{ success: boolean; data: ITransaction; items?: ITransaction[] }>('/api/transactions', data),
   update: (id: string, data: UpdateTransactionInput) => api.put<{ success: boolean; data: ITransaction }>(`/api/transactions/${id}`, data),
-  remove: (id: string) => api.delete<{ success: boolean }>(`/api/transactions/${id}`),
+  remove: (id: string, scope?: 'single' | 'plan') =>
+    api.delete<{ success: boolean }>(`/api/transactions/${id}${scope ? `?scope=${scope}` : ''}`),
 };
 
 // ============================================================

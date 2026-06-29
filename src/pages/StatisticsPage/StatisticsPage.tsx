@@ -61,6 +61,12 @@ export default function StatisticsPage() {
   const [rangeTo, setRangeTo] = useState(monthEndISO);
 
   useEffect(() => {
+    if (rangeFrom && rangeTo && rangeFrom > rangeTo) {
+      setRangeTo(rangeFrom);
+    }
+  }, [rangeFrom, rangeTo]);
+
+  useEffect(() => {
     (async () => {
       const [txns, bdgs, accts] = await Promise.all([
         loadTransactions(),
@@ -128,20 +134,27 @@ export default function StatisticsPage() {
     return [...transactionItems, ...budgetItems].sort((a, b) => a.date.localeCompare(b.date));
   }, [futureExpenseTransactions, includeBudgetSettlement, budgetSettlementItems]);
 
+  const rangeBudgetUsedMap = useMemo(() => {
+    const map: Record<string, number> = {};
+    filteredTransactions.forEach((transaction) => {
+      if (transaction.amount >= 0) return;
+      if (!transaction.budgetId) return;
+      map[transaction.budgetId] = (map[transaction.budgetId] || 0) + Math.abs(transaction.amount);
+    });
+    return map;
+  }, [filteredTransactions]);
+
   // ---- 超支预警 ----
   const overBudgetAlerts = useMemo(() => {
-    const rangeExpenses = filteredTransactions
-      .filter((transaction) => transaction.amount < 0)
-      .map((transaction) => ({ ...transaction, amount: Math.abs(transaction.amount) }));
     return budgets
       .map((b) => {
-        const used = rangeExpenses.filter((t) => t.budgetId === b.id).reduce((sum, t) => sum + t.amount, 0);
+        const used = rangeBudgetUsedMap[b.id] || 0;
         const rate = b.amount > 0 ? used / b.amount : 0;
         return { ...b, used, rate };
       })
       .filter((b) => b.rate > 0.8)
       .sort((a, b) => b.rate - a.rate);
-  }, [budgets, filteredTransactions]);
+  }, [budgets, rangeBudgetUsedMap]);
 
   // ---- 账单周期统计 ----
   const billingCycleOption = useMemo(() => {
@@ -187,12 +200,7 @@ export default function StatisticsPage() {
     if (budgets.length === 0) return null;
     const names = budgets.map((b) => b.name);
     const budgetAmounts = budgets.map((b) => b.amount);
-    const rangeExpenses = filteredTransactions
-      .filter((transaction) => transaction.amount < 0)
-      .map((transaction) => ({ ...transaction, amount: Math.abs(transaction.amount) }));
-    const usedAmounts = budgets.map((budget) =>
-      rangeExpenses.filter((t) => t.budgetId === budget.id).reduce((sum, t) => sum + t.amount, 0),
-    );
+    const usedAmounts = budgets.map((budget) => rangeBudgetUsedMap[budget.id] || 0);
 
     return {
       tooltip: { trigger: 'axis' },
@@ -221,7 +229,7 @@ export default function StatisticsPage() {
         },
       ],
     };
-  }, [budgets, filteredTransactions]);
+  }, [budgets, rangeBudgetUsedMap]);
 
   // ---- 分类支出分布 ----
   const categoryPieOption = useMemo(() => {

@@ -68,21 +68,17 @@ function buildInstallmentTransactions(payload) {
   const installmentCount = Number(payload.installmentCount || 1);
   const now = new Date().toISOString();
   const planId = createId('inst');
-  const totalAmount = Math.abs(Number(payload.amount));
+  const perAmount = Math.abs(Number(payload.amount));
   const feeTotal = payload.feeTotal != null ? Math.abs(Number(payload.feeTotal)) : 0;
-  const totalWithFee = totalAmount + feeTotal;
-  const base = Math.round((totalWithFee / installmentCount) * 100) / 100;
-  const feeBase = feeTotal > 0 ? Math.round((feeTotal / installmentCount) * 100) / 100 : 0;
+  const perFee = feeTotal > 0 ? Math.round((feeTotal / installmentCount) * 100) / 100 : 0;
   const items = [];
-  let allocated = 0;
   let feeAllocated = 0;
 
   for (let index = 0; index < installmentCount; index += 1) {
     const isLast = index === installmentCount - 1;
-    const amount = isLast ? Math.round((totalWithFee - allocated) * 100) / 100 : base;
-    allocated += amount;
-    const fee = feeTotal > 0 ? (isLast ? Math.round((feeTotal - feeAllocated) * 100) / 100 : feeBase) : 0;
+    const fee = feeTotal > 0 ? (isLast ? Math.round((feeTotal - feeAllocated) * 100) / 100 : perFee) : 0;
     feeAllocated += fee;
+    const amount = perAmount + fee;
     items.push({
       id: createId('txn'),
       date: addMonths(payload.date, index),
@@ -327,15 +323,17 @@ router.put('/:id', (req, res) => {
 
         const updateStmt = db.prepare(`
           UPDATE transactions
-          SET amount = ?, category = ?, note = ?, is_budgeted = ?, budget_id = ?, updated_at = ?
+          SET date = ?, amount = ?, category = ?, note = ?, is_budgeted = ?, budget_id = ?, updated_at = ?
           WHERE id = ?
         `);
 
+        const baseDate = date ?? existing.date;
         const tx = db.transaction(() => {
           rows.forEach((row) => {
             const suffix = row.installmentIndex && row.installmentTotal ? `（第 ${row.installmentIndex}/${row.installmentTotal} 期）` : '';
             const noteWithSuffix = suffix ? `${baseNote || '分期账单'}${suffix}` : (baseNote || '分期账单');
-            updateStmt.run(nextAmount, nextCategory, noteWithSuffix, nextIsBudgeted, nextBudgetId, now, row.id);
+            const nextDate = addMonths(baseDate, (row.installmentIndex || 1) - 1);
+            updateStmt.run(nextDate, nextAmount, nextCategory, noteWithSuffix, nextIsBudgeted, nextBudgetId, now, row.id);
           });
         });
         tx();
@@ -401,10 +399,24 @@ router.delete('/:id', (req, res) => {
       return res.status(404).json({ success: false, message: '交易记录不存在' });
     }
 
+    const scope = req.query.scope === 'plan' ? 'plan' : 'single';
+
     if (existing.paired_transaction_id) {
       db.prepare('DELETE FROM transactions WHERE paired_transaction_id = ?').run(existing.paired_transaction_id);
     } else if (existing.installment_plan_id) {
-      db.prepare('DELETE FROM transactions WHERE installment_plan_id = ?').run(existing.installment_plan_id);
+      if (scope === 'plan') {
+        const firstRow = db.prepare(
+          'SELECT MIN(date) AS firstDate FROM transactions WHERE installment_plan_id = ?',
+        ).get(existing.installment_plan_id);
+        const firstDate = firstRow?.firstDate;
+        const todayISO = new Date().toISOString().slice(0, 10);
+        if (firstDate && firstDate <= todayISO) {
+          return res.status(400).json({ success: false, message: '已到达/超过第一期日期，禁止整组删除分期计划' });
+        }
+        db.prepare('DELETE FROM transactions WHERE installment_plan_id = ?').run(existing.installment_plan_id);
+      } else {
+        db.prepare('DELETE FROM transactions WHERE id = ?').run(req.params.id);
+      }
     } else {
       db.prepare('DELETE FROM transactions WHERE id = ?').run(req.params.id);
     }
