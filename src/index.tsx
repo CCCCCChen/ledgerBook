@@ -4,9 +4,9 @@ import { BrowserRouter, HashRouter } from 'react-router-dom';
 import { ErrorBoundary } from 'react-error-boundary';
 import App from './app';
 import './index.css';
+import { isElectronRuntime } from '@/lib/electron-api';
 
 const APP_NAME = '个人收支预算管家';
-const isElectronRuntime = typeof window !== 'undefined' && 'electronAPI' in window;
 const browserBasename = import.meta.env.BASE_URL === './' ? '/' : import.meta.env.BASE_URL;
 const Router = isElectronRuntime ? HashRouter : BrowserRouter;
 

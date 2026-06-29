@@ -4,6 +4,7 @@
 
 import { accountsApi, transactionsApi, budgetsApi, statisticsApi, type TransactionFilters, type BudgetWithStats } from '@/api/index';
 import type { ITransaction, IBudget, IAccount } from '@/types/finance';
+import { MOCK_ACCOUNTS, MOCK_BUDGETS, MOCK_TRANSACTIONS } from '@/data/finance';
 import {
   getItem,
   setItem,
@@ -16,19 +17,28 @@ import {
 // localStorage 辅助函数
 // ============================================================
 function lsLoadAccounts(): IAccount[] {
-  return getItem<IAccount>(STORAGE_KEYS.accounts);
+  const data = getItem<IAccount>(STORAGE_KEYS.accounts);
+  if (data.length > 0) return data;
+  setItem(STORAGE_KEYS.accounts, MOCK_ACCOUNTS);
+  return MOCK_ACCOUNTS;
 }
 function lsSaveAccounts(accounts: IAccount[]): void {
   setItem(STORAGE_KEYS.accounts, accounts);
 }
 function lsLoadTransactions(): ITransaction[] {
-  return getItem<ITransaction>(STORAGE_KEYS.transactions);
+  const data = getItem<ITransaction>(STORAGE_KEYS.transactions);
+  if (data.length > 0) return data;
+  setItem(STORAGE_KEYS.transactions, MOCK_TRANSACTIONS);
+  return MOCK_TRANSACTIONS;
 }
 function lsSaveTransactions(transactions: ITransaction[]): void {
   setItem(STORAGE_KEYS.transactions, transactions);
 }
 function lsLoadBudgets(): IBudget[] {
-  return getItem<IBudget>(STORAGE_KEYS.budgets);
+  const data = getItem<IBudget>(STORAGE_KEYS.budgets);
+  if (data.length > 0) return data;
+  setItem(STORAGE_KEYS.budgets, MOCK_BUDGETS);
+  return MOCK_BUDGETS;
 }
 function lsSaveBudgets(budgets: IBudget[]): void {
   setItem(STORAGE_KEYS.budgets, budgets);
@@ -116,7 +126,9 @@ export async function deleteAccount(id: string): Promise<boolean> {
     }
   }
   const accounts = lsLoadAccounts().filter((a) => a.id !== id);
+  const transactions = lsLoadTransactions().map((t) => (t.accountId === id ? { ...t, accountId: '' } : t));
   lsSaveAccounts(accounts);
+  lsSaveTransactions(transactions);
   return true;
 }
 
@@ -275,7 +287,14 @@ export async function deleteBudget(id: string): Promise<boolean> {
     }
   }
   const budgets = lsLoadBudgets().filter((b) => b.id !== id);
+  const transactions = lsLoadTransactions().map((t) => {
+    if (t.budgetId === id) {
+      return { ...t, budgetId: undefined, isBudgeted: false };
+    }
+    return t;
+  });
   lsSaveBudgets(budgets);
+  lsSaveTransactions(transactions);
   return true;
 }
 

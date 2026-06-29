@@ -1,10 +1,6 @@
-type ExportDatabaseResult =
-  | { success: true; path: string }
-  | { success: false; error?: string };
+type ExportDatabaseResult = { success: boolean; path?: string; error?: string };
 
-type ImportDatabaseResult =
-  | { success: true; path: string }
-  | { success: false; error?: string };
+type ImportDatabaseResult = { success: boolean; path?: string; error?: string };
 
 export interface ElectronAPI {
   getApiBaseUrl: () => Promise<string>;

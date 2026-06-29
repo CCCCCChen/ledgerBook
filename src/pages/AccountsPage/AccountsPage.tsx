@@ -31,9 +31,9 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { getItem, setItem, STORAGE_KEYS } from '@/lib/storage';
-import { MOCK_ACCOUNTS, ACCOUNT_TYPE_LABELS } from '@/data/finance';
+import { ACCOUNT_TYPE_LABELS } from '@/data/finance';
 import type { IAccount, AccountType } from '@/types/finance';
+import { createAccount, deleteAccount, loadAccounts, updateAccount } from '@/lib/data-service';
 
 const ACCOUNT_TYPES: { value: AccountType; label: string; icon: typeof CreditCard }[] = [
   { value: 'alipay_huabei', label: '支付宝花呗', icon: CreditCard },
@@ -58,10 +58,6 @@ const TYPE_BADGE_CLASS: Record<AccountType, string> = {
   credit_card: 'bg-purple-50 text-purple-700 border-purple-200',
   debit_card: 'bg-amber-50 text-amber-700 border-amber-200',
 };
-
-function generateId(): string {
-  return `acc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
 
 interface AccountFormData {
   name: string;
@@ -89,19 +85,14 @@ export default function AccountsPage() {
   const [deleteTarget, setDeleteTarget] = useState<IAccount | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
-  // 初始化数据
-  useEffect(() => {
-    let data = getItem<IAccount>(STORAGE_KEYS.accounts);
-    if (data.length === 0) {
-      data = MOCK_ACCOUNTS;
-      setItem(STORAGE_KEYS.accounts, data);
-    }
+  const refresh = useCallback(async () => {
+    const data = await loadAccounts();
     setAccounts(data);
   }, []);
 
-  const refresh = useCallback(() => {
-    setAccounts(getItem<IAccount>(STORAGE_KEYS.accounts));
-  }, []);
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
 
   // 打开新建 Dialog
   const openCreate = () => {
@@ -135,53 +126,57 @@ export default function AccountsPage() {
     }
 
     setSubmitting(true);
-    await new Promise((r) => setTimeout(r, 300));
-
-    const now = new Date().toISOString();
-    const all = getItem<IAccount>(STORAGE_KEYS.accounts);
-
-    if (editingId) {
-      const idx = all.findIndex((a) => a.id === editingId);
-      if (idx !== -1) {
-        all[idx] = {
-          ...all[idx],
+    try {
+      if (editingId) {
+        const updated = await updateAccount(editingId, {
           name: form.name.trim(),
           type: form.type,
           billingDay: needsBillingDay(form.type) && form.billingDay ? Number(form.billingDay) : undefined,
           note: form.note.trim(),
-          updatedAt: now,
-        };
-        setItem(STORAGE_KEYS.accounts, all);
+        });
+        if (!updated) {
+          toast.error('账户更新失败');
+          return;
+        }
         toast.success('账户已更新');
+      } else {
+        const created = await createAccount({
+          name: form.name.trim(),
+          type: form.type,
+          billingDay: needsBillingDay(form.type) && form.billingDay ? Number(form.billingDay) : undefined,
+          note: form.note.trim(),
+        });
+        if (!created) {
+          toast.error('账户创建失败');
+          return;
+        }
+        toast.success('账户已添加');
       }
-    } else {
-      const newAccount: IAccount = {
-        id: generateId(),
-        name: form.name.trim(),
-        type: form.type,
-        billingDay: needsBillingDay(form.type) && form.billingDay ? Number(form.billingDay) : undefined,
-        note: form.note.trim(),
-        createdAt: now,
-        updatedAt: now,
-      };
-      setItem(STORAGE_KEYS.accounts, [...all, newAccount]);
-      toast.success('账户已添加');
-    }
 
-    setDialogOpen(false);
-    setSubmitting(false);
-    refresh();
+      setDialogOpen(false);
+      setEditingId(null);
+      setForm(EMPTY_FORM);
+      await refresh();
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   // 删除账户
   const handleDelete = async () => {
     if (!deleteTarget) return;
-    const all = getItem<IAccount>(STORAGE_KEYS.accounts);
-    const filtered = all.filter((a) => a.id !== deleteTarget.id);
-    setItem(STORAGE_KEYS.accounts, filtered);
-    toast.success('账户已删除');
-    setDeleteTarget(null);
-    refresh();
+    try {
+      const ok = await deleteAccount(deleteTarget.id);
+      if (!ok) {
+        toast.error('账户删除失败');
+        return;
+      }
+      toast.success('账户已删除');
+      setDeleteTarget(null);
+      await refresh();
+    } catch (error) {
+      toast.error(`账户删除失败：${String(error)}`);
+    }
   };
 
   return (

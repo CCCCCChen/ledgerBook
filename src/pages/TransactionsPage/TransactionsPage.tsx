@@ -42,8 +42,10 @@ import {
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
 import type { IAccount, IBudget, ITransaction, TransactionCategory } from '@/types/finance';
-import { DEFAULT_CATEGORIES, ACCOUNT_TYPE_LABELS, MOCK_TRANSACTIONS, MOCK_ACCOUNTS, MOCK_BUDGETS } from '@/data/finance';
-import { getItem, setItem, STORAGE_KEYS, exportAllData, importAllData } from '@/lib/storage';
+import { DEFAULT_CATEGORIES, ACCOUNT_TYPE_LABELS } from '@/data/finance';
+import { exportAllData, importAllData } from '@/lib/storage';
+import { createTransaction, deleteTransaction, loadAccounts, loadBudgets, loadTransactions, updateTransaction } from '@/lib/data-service';
+import { getElectronAPI, isElectronRuntime } from '@/lib/electron-api';
 
 const CATEGORIES: TransactionCategory[] = DEFAULT_CATEGORIES;
 
@@ -69,29 +71,10 @@ const EMPTY_FORM: TransactionFormData = {
   budgetId: '',
 };
 
-function generateId(): string {
-  return `txn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-function loadTransactions(): ITransaction[] {
-  const stored = getItem<ITransaction>(STORAGE_KEYS.transactions);
-  if (stored.length === 0) {
-    setItem(STORAGE_KEYS.transactions, MOCK_TRANSACTIONS);
-    return MOCK_TRANSACTIONS;
-  }
-  return stored;
-}
-
 export default function TransactionsPage() {
-  const [transactions, setTransactions] = useState<ITransaction[]>(() => loadTransactions());
-  const [accounts, setAccounts] = useState<IAccount[]>(() => {
-    const stored = getItem<IAccount>(STORAGE_KEYS.accounts);
-    return stored.length > 0 ? stored : MOCK_ACCOUNTS;
-  });
-  const [budgets, setBudgets] = useState<IBudget[]>(() => {
-    const stored = getItem<IBudget>(STORAGE_KEYS.budgets);
-    return stored.length > 0 ? stored : MOCK_BUDGETS;
-  });
+  const [transactions, setTransactions] = useState<ITransaction[]>([]);
+  const [accounts, setAccounts] = useState<IAccount[]>([]);
+  const [budgets, setBudgets] = useState<IBudget[]>([]);
 
   // Filters
   const [filterAccountId, setFilterAccountId] = useState('all');
@@ -116,27 +99,33 @@ export default function TransactionsPage() {
   // Sort
   const [sortAsc, setSortAsc] = useState(false);
 
-  // Persist
-  const persist = useCallback((data: ITransaction[]) => {
-    setTransactions(data);
-    setItem(STORAGE_KEYS.transactions, data);
+  const refreshAll = useCallback(async () => {
+    try {
+      const [txns, accts, bdgs] = await Promise.all([
+        loadTransactions(),
+        loadAccounts(),
+        loadBudgets(),
+      ]);
+      setTransactions(txns);
+      setAccounts(accts);
+      setBudgets(bdgs);
+    } catch (error) {
+      toast.error(`加载数据失败：${String(error)}`);
+    }
   }, []);
 
-  // Refresh accounts & budgets from storage
-  const refreshAccounts = useCallback(() => {
-    const stored = getItem<IAccount>(STORAGE_KEYS.accounts);
-    setAccounts(stored.length > 0 ? stored : MOCK_ACCOUNTS);
-  }, []);
-  
-  const refreshBudgets = useCallback(() => {
-    const stored = getItem<IBudget>(STORAGE_KEYS.budgets);
-    setBudgets(stored.length > 0 ? stored : MOCK_BUDGETS);
+  const refreshTransactions = useCallback(async () => {
+    try {
+      const txns = await loadTransactions();
+      setTransactions(txns);
+    } catch (error) {
+      toast.error(`加载交易记录失败：${String(error)}`);
+    }
   }, []);
 
   useEffect(() => {
-    refreshAccounts();
-    refreshBudgets();
-  }, [refreshAccounts, refreshBudgets]);
+    void refreshAll();
+  }, [refreshAll]);
 
   // Filtered & sorted
   const filtered = useMemo(() => {
@@ -219,62 +208,101 @@ export default function TransactionsPage() {
     }
 
     setSubmitting(true);
-    await new Promise((r) => setTimeout(r, 400));
-
-    const now = new Date().toISOString();
     const amount = Number(form.amount) * (form.isExpense ? -1 : 1);
 
-    if (editingId) {
-      const updated = transactions.map((t) =>
-        t.id === editingId
-          ? {
-              ...t,
-              date: form.date,
-              accountId: form.accountId,
-              amount,
-              category: form.category,
-              note: form.note,
-              isBudgeted: form.isBudgeted,
-              budgetId: form.isBudgeted ? form.budgetId : undefined,
-              updatedAt: now,
-            }
-          : t
-      );
-      persist(updated);
-      toast.success('交易记录已更新');
-    } else {
-      const newTxn: ITransaction = {
-        id: generateId(),
-        date: form.date,
-        accountId: form.accountId,
-        amount,
-        category: form.category,
-        note: form.note,
-        isBudgeted: form.isBudgeted,
-        budgetId: form.isBudgeted ? form.budgetId : undefined,
-        createdAt: now,
-        updatedAt: now,
-      };
-      persist([newTxn, ...transactions]);
-      toast.success('交易记录已添加');
+    try {
+      if (editingId) {
+        const updated = await updateTransaction(editingId, {
+          date: form.date,
+          accountId: form.accountId,
+          amount,
+          category: form.category,
+          note: form.note,
+          isBudgeted: form.isBudgeted,
+          budgetId: form.isBudgeted ? form.budgetId : undefined,
+        });
+        if (!updated) {
+          toast.error('交易记录更新失败');
+        } else {
+          toast.success('交易记录已更新');
+        }
+      } else {
+        const created = await createTransaction({
+          date: form.date,
+          accountId: form.accountId,
+          amount,
+          category: form.category,
+          note: form.note,
+          isBudgeted: form.isBudgeted,
+          budgetId: form.isBudgeted ? form.budgetId : undefined,
+        });
+        if (!created) {
+          toast.error('交易记录创建失败');
+        } else {
+          toast.success('交易记录已添加');
+        }
+      }
+
+      await refreshTransactions();
+      setDialogOpen(false);
+      setForm(EMPTY_FORM);
+      setEditingId(null);
+    } finally {
+      setSubmitting(false);
     }
 
-    setSubmitting(false);
-    setDialogOpen(false);
-    setForm(EMPTY_FORM);
-    setEditingId(null);
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!deleteTarget) return;
-    const updated = transactions.filter((t) => t.id !== deleteTarget);
-    persist(updated);
-    toast.success('交易记录已删除');
+    try {
+      const ok = await deleteTransaction(deleteTarget);
+      if (ok) {
+        toast.success('交易记录已删除');
+        await refreshTransactions();
+      } else {
+        toast.error('删除失败');
+      }
+    } catch (error) {
+      toast.error(`删除失败：${String(error)}`);
+    }
     setDeleteTarget(null);
   };
 
-  // Import
-  const handleImport = (e: ChangeEvent<HTMLInputElement>) => {
+  const handleExport = async () => {
+    const electronAPI = getElectronAPI();
+    if (electronAPI) {
+      const result = await electronAPI.exportDatabase();
+      if (result.success) {
+        toast.success('数据库已导出');
+      } else {
+        toast.error(result.error || '导出失败');
+      }
+      return;
+    }
+
+    exportAllData();
+    toast.success('数据已导出');
+  };
+
+  const handleImportDatabase = async () => {
+    const electronAPI = getElectronAPI();
+    if (!electronAPI) return;
+    setImporting(true);
+    try {
+      const result = await electronAPI.importDatabase();
+      if (result.success) {
+        toast.success('数据库已导入');
+        await refreshAll();
+      } else {
+        toast.error(result.error || '导入失败');
+      }
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const handleImportJson = (e: ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
     setImporting(true);
@@ -285,9 +313,7 @@ export default function TransactionsPage() {
         const ok = importAllData(text);
         if (ok) {
           toast.success('数据导入成功');
-          setTransactions(loadTransactions());
-          refreshAccounts();
-          refreshBudgets();
+          void refreshAll();
         } else {
           toast.error('文件格式不正确，导入失败');
         }
@@ -344,23 +370,30 @@ export default function TransactionsPage() {
               <Plus className="size-4" />
               添加记录
             </Button>
-            <Button variant="outline" size="sm" onClick={exportAllData}>
+            <Button variant="outline" size="sm" onClick={handleExport}>
               <Download className="size-4" />
               导出
             </Button>
-            <Button variant="outline" size="sm" asChild>
-              <label className="cursor-pointer">
+            {isElectronRuntime ? (
+              <Button variant="outline" size="sm" onClick={handleImportDatabase} disabled={importing}>
                 <Upload className="size-4" />
                 {importing ? '导入中...' : '导入'}
-                <input
-                  type="file"
-                  accept=".json"
-                  onChange={handleImport}
-                  className="hidden"
-                  disabled={importing}
-                />
-              </label>
-            </Button>
+              </Button>
+            ) : (
+              <Button variant="outline" size="sm" asChild>
+                <label className="cursor-pointer">
+                  <Upload className="size-4" />
+                  {importing ? '导入中...' : '导入'}
+                  <input
+                    type="file"
+                    accept=".json"
+                    onChange={handleImportJson}
+                    className="hidden"
+                    disabled={importing}
+                  />
+                </label>
+              </Button>
+            )}
           </div>
         </div>
 

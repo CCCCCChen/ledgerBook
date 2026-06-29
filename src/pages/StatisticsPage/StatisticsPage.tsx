@@ -7,10 +7,10 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { AlertTriangle, TrendingUp } from 'lucide-react';
-import { getItem, STORAGE_KEYS } from '@/lib/storage';
 import { CHART_COLORS } from '@/lib/chart-colors';
-import { MOCK_TRANSACTIONS, MOCK_BUDGETS, MOCK_ACCOUNTS, ACCOUNT_TYPE_LABELS } from '@/data/finance';
+import { ACCOUNT_TYPE_LABELS } from '@/data/finance';
 import type { ITransaction, IBudget, IAccount, TransactionCategory } from '@/types/finance';
+import { loadAccounts, loadBudgets, loadTransactions } from '@/lib/data-service';
 
 type TimeGranularity = 'daily' | 'weekly' | 'monthly';
 
@@ -50,12 +50,16 @@ export default function StatisticsPage() {
   const [timeGranularity, setTimeGranularity] = useState<TimeGranularity>('daily');
 
   useEffect(() => {
-    const txns = getItem<ITransaction>(STORAGE_KEYS.transactions);
-    const bdgs = getItem<IBudget>(STORAGE_KEYS.budgets);
-    const accts = getItem<IAccount>(STORAGE_KEYS.accounts);
-    setTransactions(txns.length > 0 ? txns : MOCK_TRANSACTIONS);
-    setBudgets(bdgs.length > 0 ? bdgs : MOCK_BUDGETS);
-    setAccounts(accts.length > 0 ? accts : MOCK_ACCOUNTS);
+    (async () => {
+      const [txns, bdgs, accts] = await Promise.all([
+        loadTransactions(),
+        loadBudgets(),
+        loadAccounts(),
+      ]);
+      setTransactions(txns);
+      setBudgets(bdgs);
+      setAccounts(accts);
+    })().catch(() => {});
   }, []);
 
   const expenses = useMemo(

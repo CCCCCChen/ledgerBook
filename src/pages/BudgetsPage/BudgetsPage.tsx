@@ -34,15 +34,13 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
-import type { IBudget, BudgetCycleType, TransactionCategory } from '@/types/finance';
-import { MOCK_BUDGETS, MOCK_TRANSACTIONS, DEFAULT_CATEGORIES, BUDGET_CYCLE_LABELS } from '@/data/finance';
-import { STORAGE_KEYS, getItem, setItem, exportAllData, importAllData } from '@/lib/storage';
+import type { IBudget, BudgetCycleType, ITransaction, TransactionCategory } from '@/types/finance';
+import { DEFAULT_CATEGORIES, BUDGET_CYCLE_LABELS } from '@/data/finance';
+import { exportAllData, importAllData } from '@/lib/storage';
+import { createBudget, deleteBudget, loadBudgets, loadTransactions, updateBudget } from '@/lib/data-service';
+import { getElectronAPI, isElectronRuntime } from '@/lib/electron-api';
 
 const CYCLE_OPTIONS: BudgetCycleType[] = ['once', 'weekly', 'monthly', 'yearly'];
-
-function generateId(): string {
-  return `bud-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-}
 
 function getTodayISO(): string {
   return new Date().toISOString().slice(0, 10);
@@ -91,34 +89,22 @@ const EMPTY_FORM: BudgetFormData = {
 
 export default function BudgetsPage() {
   const [budgets, setBudgets] = useState<IBudget[]>([]);
-  const [transactions, setTransactions] = useState<{ budgetId?: string; amount: number }[]>([]);
+  const [transactions, setTransactions] = useState<ITransaction[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<BudgetFormData>(EMPTY_FORM);
   const [deleteTarget, setDeleteTarget] = useState<IBudget | null>(null);
   const [importInput, setImportInput] = useState<string>('');
 
-  // 初始化数据
+  const refreshBudgets = useCallback(async () => {
+    const [bdgs, txns] = await Promise.all([loadBudgets(), loadTransactions()]);
+    setBudgets(bdgs);
+    setTransactions(txns);
+  }, []);
+
   useEffect(() => {
-    let loadedBudgets = getItem<IBudget>(STORAGE_KEYS.budgets);
-    if (loadedBudgets.length === 0) {
-      loadedBudgets = MOCK_BUDGETS;
-      setItem(STORAGE_KEYS.budgets, loadedBudgets);
-    }
-    setBudgets(loadedBudgets);
-
-    let loadedTxns = getItem<{ budgetId?: string; amount: number }>(STORAGE_KEYS.transactions);
-    if (loadedTxns.length === 0) {
-      loadedTxns = MOCK_TRANSACTIONS;
-      setItem(STORAGE_KEYS.transactions, loadedTxns);
-    }
-    setTransactions(loadedTxns);
-  }, []);
-
-  const refreshBudgets = useCallback(() => {
-    setBudgets(getItem<IBudget>(STORAGE_KEYS.budgets));
-    setTransactions(getItem<{ budgetId?: string; amount: number }>(STORAGE_KEYS.transactions));
-  }, []);
+    void refreshBudgets();
+  }, [refreshBudgets]);
 
   // 预算使用统计
   const budgetStats = useMemo(() => {
@@ -162,7 +148,7 @@ export default function BudgetsPage() {
   };
 
   // 提交表单
-  const handleSubmit = (e: FormEvent) => {
+  const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     const amountNum = parseFloat(form.amount);
     if (!form.name.trim()) {
@@ -178,67 +164,82 @@ export default function BudgetsPage() {
       return;
     }
 
-    const now = new Date().toISOString();
-    const allBudgets = getItem<IBudget>(STORAGE_KEYS.budgets);
-
     if (editingId) {
-      const updated = allBudgets.map((b) =>
-        b.id === editingId
-          ? {
-              ...b,
-              name: form.name.trim(),
-              amount: amountNum,
-              cycleType: form.cycleType,
-              startDate: form.startDate,
-              endDate: form.cycleType === 'once' ? form.endDate : undefined,
-              category: form.category === 'all' ? undefined : form.category,
-              updatedAt: now,
-            }
-          : b,
-      );
-      setItem(STORAGE_KEYS.budgets, updated);
-      toast.success('预算已更新');
-    } else {
-      const newBudget: IBudget = {
-        id: generateId(),
+      const updated = await updateBudget(editingId, {
         name: form.name.trim(),
         amount: amountNum,
         cycleType: form.cycleType,
         startDate: form.startDate,
         endDate: form.cycleType === 'once' ? form.endDate : undefined,
         category: form.category === 'all' ? undefined : form.category,
-        createdAt: now,
-        updatedAt: now,
-      };
-      setItem(STORAGE_KEYS.budgets, [...allBudgets, newBudget]);
+      });
+      if (!updated) {
+        toast.error('预算更新失败');
+        return;
+      }
+      toast.success('预算已更新');
+    } else {
+      const created = await createBudget({
+        name: form.name.trim(),
+        amount: amountNum,
+        cycleType: form.cycleType,
+        startDate: form.startDate,
+        endDate: form.cycleType === 'once' ? form.endDate : undefined,
+        category: form.category === 'all' ? undefined : form.category,
+      });
+      if (!created) {
+        toast.error('预算创建失败');
+        return;
+      }
       toast.success('预算已创建');
     }
 
     setDialogOpen(false);
-    refreshBudgets();
+    await refreshBudgets();
   };
 
   // 删除预算
-  const handleDelete = () => {
+  const handleDelete = async () => {
     if (!deleteTarget) return;
-    const allBudgets = getItem<IBudget>(STORAGE_KEYS.budgets);
-    const filtered = allBudgets.filter((b) => b.id !== deleteTarget.id);
-    setItem(STORAGE_KEYS.budgets, filtered);
-
-    // 解除关联交易记录的 budgetId
-    const allTxns = getItem<{ budgetId?: string; amount: number; id: string }>(STORAGE_KEYS.transactions);
-    const updatedTxns = allTxns.map((t) =>
-      t.budgetId === deleteTarget.id ? { ...t, budgetId: undefined } : t,
-    );
-    setItem(STORAGE_KEYS.transactions, updatedTxns);
-
+    const ok = await deleteBudget(deleteTarget.id);
+    if (!ok) {
+      toast.error('预算删除失败');
+      return;
+    }
     toast.success('预算已删除');
     setDeleteTarget(null);
-    refreshBudgets();
+    await refreshBudgets();
   };
 
   // 导入数据
-  const handleImport = () => {
+  const handleExport = async () => {
+    const electronAPI = getElectronAPI();
+    if (electronAPI) {
+      const result = await electronAPI.exportDatabase();
+      if (result.success) {
+        toast.success('数据库已导出');
+      } else {
+        toast.error(result.error || '导出失败');
+      }
+      return;
+    }
+    exportAllData();
+    toast.success('数据已导出');
+  };
+
+  const handleImportDatabase = async () => {
+    const electronAPI = getElectronAPI();
+    if (!electronAPI) return;
+    const result = await electronAPI.importDatabase();
+    if (result.success) {
+      toast.success('数据库已导入');
+      await refreshBudgets();
+    } else {
+      toast.error(result.error || '导入失败');
+    }
+  };
+
+  const handleImportJson = async () => {
     if (!importInput.trim()) {
       toast.error('请粘贴 JSON 数据');
       return;
@@ -247,7 +248,7 @@ export default function BudgetsPage() {
     if (success) {
       toast.success('数据导入成功');
       setImportInput('');
-      refreshBudgets();
+      await refreshBudgets();
     } else {
       toast.error('数据格式不正确');
     }
@@ -314,22 +315,31 @@ export default function BudgetsPage() {
               <Plus className="size-4" />
               新建预算
             </Button>
-            <Button variant="outline" onClick={exportAllData}>
+            <Button variant="outline" onClick={handleExport}>
               <Download className="size-4" />
               导出数据
             </Button>
-            <div className="flex items-center gap-2 ml-auto">
-              <Input
-                placeholder="粘贴 JSON 导入..."
-                value={importInput}
-                onChange={(e) => setImportInput(e.target.value)}
-                className="w-48 text-sm"
-              />
-              <Button variant="outline" size="sm" onClick={handleImport}>
-                <Upload className="size-4" />
-                导入
-              </Button>
-            </div>
+            {isElectronRuntime ? (
+              <div className="flex items-center gap-2 ml-auto">
+                <Button variant="outline" size="sm" onClick={handleImportDatabase}>
+                  <Upload className="size-4" />
+                  导入数据库
+                </Button>
+              </div>
+            ) : (
+              <div className="flex items-center gap-2 ml-auto">
+                <Input
+                  placeholder="粘贴 JSON 导入..."
+                  value={importInput}
+                  onChange={(e) => setImportInput(e.target.value)}
+                  className="w-48 text-sm"
+                />
+                <Button variant="outline" size="sm" onClick={handleImportJson}>
+                  <Upload className="size-4" />
+                  导入
+                </Button>
+              </div>
+            )}
           </div>
         </section>
 
