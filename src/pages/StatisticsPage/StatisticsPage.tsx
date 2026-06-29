@@ -15,6 +15,7 @@ import { ACCOUNT_TYPE_LABELS } from '@/data/finance';
 import type { ITransaction, IBudget, IAccount } from '@/types/finance';
 import { loadAccounts, loadBudgets, loadTransactions } from '@/lib/data-service';
 import { listBudgetSettlementsForRange } from '@/lib/finance-utils';
+import { formatLocalISODate, formatLocalISOYearMonth } from '@/lib/date';
 
 type TimeGranularity = 'daily' | 'weekly' | 'monthly';
 
@@ -23,11 +24,11 @@ function getWeekStart(date: Date): string {
   const day = d.getDay();
   const diff = d.getDate() - day + (day === 0 ? -6 : 1);
   d.setDate(diff);
-  return d.toISOString().slice(0, 10);
+  return formatLocalISODate(d);
 }
 
 function getMonthKey(date: Date): string {
-  return date.toISOString().slice(0, 7);
+  return formatLocalISOYearMonth(date);
 }
 
 function getBillingCycleRange(billingDay: number, refDate: Date): { start: string; end: string } {
@@ -41,8 +42,8 @@ function getBillingCycleRange(billingDay: number, refDate: Date): { start: strin
   end.setMonth(end.getMonth() + 1);
   end.setDate(end.getDate() - 1);
   return {
-    start: start.toISOString().slice(0, 10),
-    end: end.toISOString().slice(0, 10),
+    start: formatLocalISODate(start),
+    end: formatLocalISODate(end),
   };
 }
 
@@ -54,9 +55,9 @@ export default function StatisticsPage() {
   const [timeGranularity, setTimeGranularity] = useState<TimeGranularity>('daily');
   const [includeBudgetSettlement, setIncludeBudgetSettlement] = useState(true);
   const today = new Date();
-  const todayISO = today.toISOString().slice(0, 10);
-  const monthStartISO = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-  const monthEndISO = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().slice(0, 10);
+  const todayISO = formatLocalISODate(today);
+  const monthStartISO = formatLocalISODate(new Date(today.getFullYear(), today.getMonth(), 1));
+  const monthEndISO = formatLocalISODate(new Date(today.getFullYear(), today.getMonth() + 1, 0));
   const [rangeFrom, setRangeFrom] = useState(monthStartISO);
   const [rangeTo, setRangeTo] = useState(monthEndISO);
 

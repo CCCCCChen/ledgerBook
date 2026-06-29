@@ -2,6 +2,19 @@ const express = require('express');
 const router = express.Router();
 const { getDatabase } = require('../db.cjs');
 
+function formatISODate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function formatISOYearMonth(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  return `${y}-${m}`;
+}
+
 router.get('/overview', (req, res) => {
   try {
     const db = getDatabase();
@@ -46,8 +59,8 @@ router.get('/billing-cycle', (req, res) => {
       end.setMonth(end.getMonth() + 1);
       end.setDate(end.getDate() - 1);
 
-      const startStr = start.toISOString().slice(0, 10);
-      const endStr = end.toISOString().slice(0, 10);
+      const startStr = formatISODate(start);
+      const endStr = formatISODate(end);
 
       const row = db.prepare(
         "SELECT COALESCE(SUM(ABS(amount)), 0) as total FROM transactions WHERE account_id = ? AND amount < 0 AND date >= ? AND date <= ?"
@@ -146,9 +159,9 @@ router.get('/trend', (req, res) => {
         const diff = d.getDate() - day + (day === 0 ? -6 : 1);
         const monday = new Date(d);
         monday.setDate(diff);
-        key = monday.toISOString().slice(0, 10);
+        key = formatISODate(monday);
       } else if (granularity === 'monthly') {
-        key = d.toISOString().slice(0, 7);
+        key = formatISOYearMonth(d);
       } else {
         key = row.date;
       }

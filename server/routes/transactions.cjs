@@ -13,7 +13,10 @@ function addMonths(date, months) {
   result.setMonth(result.getMonth() + months);
   const lastDay = new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate();
   result.setDate(Math.min(originalDay, lastDay));
-  return result.toISOString().slice(0, 10);
+  const y = result.getFullYear();
+  const m = String(result.getMonth() + 1).padStart(2, '0');
+  const d = String(result.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 function buildRepaymentTransactions(payload) {

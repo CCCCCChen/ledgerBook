@@ -46,6 +46,7 @@ import { DEFAULT_CATEGORIES, ACCOUNT_TYPE_LABELS } from '@/data/finance';
 import { exportAllData, importAllData } from '@/lib/storage';
 import { createTransaction, deleteTransaction, loadAccounts, loadBudgets, loadTransactions, updateTransaction } from '@/lib/data-service';
 import { getElectronAPI, isElectronRuntime } from '@/lib/electron-api';
+import { nowLocalISODate } from '@/lib/date';
 
 const CATEGORIES: TransactionCategory[] = DEFAULT_CATEGORIES;
 const IS_ELECTRON = isElectronRuntime();
@@ -73,7 +74,7 @@ interface TransactionFormData {
 }
 
 const EMPTY_FORM: TransactionFormData = {
-  date: new Date().toISOString().slice(0, 10),
+  date: nowLocalISODate(),
   transactionType: 'normal',
   accountId: '',
   repaymentTargetAccountId: '',
@@ -201,7 +202,7 @@ export default function TransactionsPage() {
   const openAddDialog = () => {
     setEditingId(null);
     setEditingMeta(null);
-    setForm({ ...EMPTY_FORM, date: new Date().toISOString().slice(0, 10) });
+    setForm({ ...EMPTY_FORM, date: nowLocalISODate() });
     setDialogOpen(true);
   };
 
@@ -331,7 +332,7 @@ export default function TransactionsPage() {
 
   const currentPlanStarted = useMemo(() => {
     if (!editingMeta?.installmentPlanId) return false;
-    const today = new Date().toISOString().slice(0, 10);
+    const today = nowLocalISODate();
     return transactions.some((t) => t.installmentPlanId === editingMeta.installmentPlanId && t.date <= today);
   }, [editingMeta?.installmentPlanId, transactions]);
 

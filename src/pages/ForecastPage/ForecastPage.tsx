@@ -9,13 +9,14 @@ import { Button } from '@/components/ui/button';
 import type { IAccount, IBudget, ITransaction } from '@/types/finance';
 import { loadAccounts, loadBudgets, loadTransactions } from '@/lib/data-service';
 import { listBudgetSettlementsForRange } from '@/lib/finance-utils';
+import { formatLocalISODate } from '@/lib/date';
 
 export default function ForecastPage() {
   const navigate = useNavigate();
   const today = new Date();
-  const todayISO = today.toISOString().slice(0, 10);
-  const monthStartISO = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
-  const monthEndISO = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().slice(0, 10);
+  const todayISO = formatLocalISODate(today);
+  const monthStartISO = formatLocalISODate(new Date(today.getFullYear(), today.getMonth(), 1));
+  const monthEndISO = formatLocalISODate(new Date(today.getFullYear(), today.getMonth() + 1, 0));
 
   const [transactions, setTransactions] = useState<ITransaction[]>([]);
   const [budgets, setBudgets] = useState<IBudget[]>([]);
@@ -140,4 +141,3 @@ export default function ForecastPage() {
     </div>
   );
 }
-

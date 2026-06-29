@@ -40,12 +40,13 @@ import { exportAllData, importAllData } from '@/lib/storage';
 import { createBudget, deleteBudget, loadBudgets, updateBudget } from '@/lib/data-service';
 import { getElectronAPI, isElectronRuntime } from '@/lib/electron-api';
 import type { BudgetWithStats } from '@/api';
+import { nowLocalISODate } from '@/lib/date';
 
 const CYCLE_OPTIONS: BudgetCycleType[] = ['once', 'weekly', 'monthly', 'yearly', 'custom'];
 const IS_ELECTRON = isElectronRuntime();
 
 function getTodayISO(): string {
-  return new Date().toISOString().slice(0, 10);
+  return nowLocalISODate();
 }
 
 function getProgressColor(rate: number): string {

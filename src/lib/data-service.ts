@@ -22,6 +22,7 @@ import {
   importAllData,
 } from './storage';
 import { getBudgetCycleWindow, getBudgetRate, getBudgetUsedInWindow } from './finance-utils';
+import { formatLocalISODate, nowLocalISODate } from './date';
 
 // ============================================================
 // localStorage 辅助函数
@@ -229,7 +230,7 @@ export async function createTransaction(data: CreateTransactionInput): Promise<I
       date.setMonth(date.getMonth() + index);
       txns.push({
         id: `txn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${index + 1}`,
-        date: date.toISOString().slice(0, 10),
+        date: formatLocalISODate(date),
         accountId: data.accountId || '',
         amount: -amount,
         category: data.category || '其他',
@@ -310,7 +311,7 @@ export async function updateTransaction(id: string, data: UpdateTransactionInput
         if (transaction.installmentIndex) {
           const date = new Date(`${baseDate}T00:00:00`);
           date.setMonth(date.getMonth() + (transaction.installmentIndex - 1));
-          transaction.date = date.toISOString().slice(0, 10);
+          transaction.date = formatLocalISODate(date);
         }
         transaction.amount = amount;
         transaction.category = category;
@@ -355,7 +356,7 @@ export async function deleteTransaction(id: string, scope: 'single' | 'plan' = '
   const current = lsLoadTransactions();
   const existing = current.find((t) => t.id === id);
   if (!existing) return false;
-  const todayISO = new Date().toISOString().slice(0, 10);
+  const todayISO = nowLocalISODate();
   const txns = current.filter((transaction) => {
     if (existing.pairedTransactionId) {
       return transaction.pairedTransactionId !== existing.pairedTransactionId;

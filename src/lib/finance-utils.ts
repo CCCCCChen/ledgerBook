@@ -1,4 +1,5 @@
 import type { IBudget, ITransaction } from '@/types/finance';
+import { formatLocalISODate } from '@/lib/date';
 
 export interface BudgetCycleWindow {
   start: string;
@@ -20,7 +21,7 @@ function parseISODate(date: string): Date {
 }
 
 function formatISODate(date: Date): string {
-  return date.toISOString().slice(0, 10);
+  return formatLocalISODate(date);
 }
 
 function addDays(date: Date, days: number): Date {
