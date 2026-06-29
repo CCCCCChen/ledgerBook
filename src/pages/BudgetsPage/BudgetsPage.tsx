@@ -34,27 +34,18 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
-import type { IBudget, BudgetCycleType, ITransaction, TransactionCategory } from '@/types/finance';
+import type { IBudget, BudgetCycleType, TransactionCategory } from '@/types/finance';
 import { DEFAULT_CATEGORIES, BUDGET_CYCLE_LABELS } from '@/data/finance';
 import { exportAllData, importAllData } from '@/lib/storage';
-import { createBudget, deleteBudget, loadBudgets, loadTransactions, updateBudget } from '@/lib/data-service';
+import { createBudget, deleteBudget, loadBudgets, updateBudget } from '@/lib/data-service';
 import { getElectronAPI, isElectronRuntime } from '@/lib/electron-api';
+import type { BudgetWithStats } from '@/api';
 
-const CYCLE_OPTIONS: BudgetCycleType[] = ['once', 'weekly', 'monthly', 'yearly'];
+const CYCLE_OPTIONS: BudgetCycleType[] = ['once', 'weekly', 'monthly', 'yearly', 'custom'];
+const IS_ELECTRON = isElectronRuntime();
 
 function getTodayISO(): string {
   return new Date().toISOString().slice(0, 10);
-}
-
-function getBudgetUsed(budgetId: string, transactions: { budgetId?: string; amount: number }[]): number {
-  return transactions
-    .filter((t) => t.budgetId === budgetId && t.amount < 0)
-    .reduce((sum, t) => sum + Math.abs(t.amount), 0);
-}
-
-function getUsageRate(used: number, total: number): number {
-  if (total <= 0) return 0;
-  return Math.round((used / total) * 100);
 }
 
 function getProgressColor(rate: number): string {
@@ -75,6 +66,7 @@ interface BudgetFormData {
   cycleType: BudgetCycleType;
   startDate: string;
   endDate: string;
+  cycleDays: string;
   category: TransactionCategory | 'all';
 }
 
@@ -84,12 +76,12 @@ const EMPTY_FORM: BudgetFormData = {
   cycleType: 'monthly',
   startDate: getTodayISO(),
   endDate: '',
+  cycleDays: '30',
   category: 'all',
 };
 
 export default function BudgetsPage() {
-  const [budgets, setBudgets] = useState<IBudget[]>([]);
-  const [transactions, setTransactions] = useState<ITransaction[]>([]);
+  const [budgets, setBudgets] = useState<BudgetWithStats[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<BudgetFormData>(EMPTY_FORM);
@@ -97,33 +89,23 @@ export default function BudgetsPage() {
   const [importInput, setImportInput] = useState<string>('');
 
   const refreshBudgets = useCallback(async () => {
-    const [bdgs, txns] = await Promise.all([loadBudgets(), loadTransactions()]);
+    const bdgs = await loadBudgets();
     setBudgets(bdgs);
-    setTransactions(txns);
   }, []);
 
   useEffect(() => {
     void refreshBudgets();
   }, [refreshBudgets]);
 
-  // 预算使用统计
-  const budgetStats = useMemo(() => {
-    return budgets.map((b) => {
-      const used = getBudgetUsed(b.id, transactions);
-      const rate = getUsageRate(used, b.amount);
-      return { ...b, used, rate };
-    });
-  }, [budgets, transactions]);
-
   // 超支预警列表
   const overBudgetItems = useMemo(
-    () => budgetStats.filter((b) => b.rate > 100),
-    [budgetStats],
+    () => budgets.filter((b) => b.rate > 100),
+    [budgets],
   );
 
   const warningItems = useMemo(
-    () => budgetStats.filter((b) => b.rate >= 80 && b.rate <= 100),
-    [budgetStats],
+    () => budgets.filter((b) => b.rate >= 80 && b.rate <= 100),
+    [budgets],
   );
 
   // 打开新建 Dialog
@@ -142,6 +124,7 @@ export default function BudgetsPage() {
       cycleType: budget.cycleType,
       startDate: budget.startDate,
       endDate: budget.endDate || '',
+      cycleDays: budget.cycleDays ? String(budget.cycleDays) : '30',
       category: budget.category || 'all',
     });
     setDialogOpen(true);
@@ -163,6 +146,10 @@ export default function BudgetsPage() {
       toast.error('临时预算必须设置结束日期');
       return;
     }
+    if (form.cycleType === 'custom' && (!form.cycleDays || Number(form.cycleDays) < 2)) {
+      toast.error('自定义周期至少需要 2 天');
+      return;
+    }
 
     if (editingId) {
       const updated = await updateBudget(editingId, {
@@ -171,6 +158,7 @@ export default function BudgetsPage() {
         cycleType: form.cycleType,
         startDate: form.startDate,
         endDate: form.cycleType === 'once' ? form.endDate : undefined,
+        cycleDays: form.cycleType === 'custom' ? Number(form.cycleDays) : undefined,
         category: form.category === 'all' ? undefined : form.category,
       });
       if (!updated) {
@@ -185,6 +173,7 @@ export default function BudgetsPage() {
         cycleType: form.cycleType,
         startDate: form.startDate,
         endDate: form.cycleType === 'once' ? form.endDate : undefined,
+        cycleDays: form.cycleType === 'custom' ? Number(form.cycleDays) : undefined,
         category: form.category === 'all' ? undefined : form.category,
       });
       if (!created) {
@@ -319,7 +308,7 @@ export default function BudgetsPage() {
               <Download className="size-4" />
               导出数据
             </Button>
-            {isElectronRuntime ? (
+            {IS_ELECTRON ? (
               <div className="flex items-center gap-2 ml-auto">
                 <Button variant="outline" size="sm" onClick={handleImportDatabase}>
                   <Upload className="size-4" />
@@ -346,7 +335,7 @@ export default function BudgetsPage() {
         {/* 预算卡片列表 */}
         <section className="w-full py-0">
           <div className="max-w-7xl mx-auto px-4 md:px-6">
-            {budgetStats.length === 0 ? (
+            {budgets.length === 0 ? (
               <Card className="border-dashed">
                 <CardContent className="flex flex-col items-center justify-center py-16 gap-3">
                   <PiggyBank className="size-12 text-muted-foreground/40" />
@@ -359,7 +348,7 @@ export default function BudgetsPage() {
               </Card>
             ) : (
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                {budgetStats.map((budget) => (
+                {budgets.map((budget) => (
                   <Card key={budget.id} className="group">
                     <CardHeader className="pb-3">
                       <div className="flex items-start justify-between gap-2">
@@ -367,7 +356,9 @@ export default function BudgetsPage() {
                           <CardTitle className="text-base truncate">{budget.name}</CardTitle>
                           <div className="flex items-center gap-2 mt-1.5">
                             <Badge variant="secondary" className="text-xs">
-                              {BUDGET_CYCLE_LABELS[budget.cycleType]}
+                              {budget.cycleType === 'custom' && budget.cycleDays
+                                ? `每 ${budget.cycleDays} 天`
+                                : BUDGET_CYCLE_LABELS[budget.cycleType]}
                             </Badge>
                             {budget.category && (
                               <Badge variant="outline" className="text-xs">
@@ -411,10 +402,7 @@ export default function BudgetsPage() {
 
                       {/* 进度条 */}
                       <div className="space-y-1.5">
-                        <Progress
-                          value={Math.min(budget.rate, 100)}
-                          className="h-2 [&>*]:bg-primary"
-                        />
+                        <Progress value={Math.min(budget.rate, 100)} className={`h-2 ${getProgressColor(budget.rate)}`} />
 
                         <div className="flex items-center justify-between text-xs text-muted-foreground">
                           <span>已使用 ¥{budget.used.toLocaleString()}</span>
@@ -429,6 +417,10 @@ export default function BudgetsPage() {
                         {budget.cycleType === 'once' && budget.endDate ? (
                           <span>
                             {budget.startDate} ~ {budget.endDate}
+                          </span>
+                        ) : budget.currentPeriodStart && budget.currentPeriodEnd ? (
+                          <span>
+                            当前周期：{budget.currentPeriodStart} ~ {budget.currentPeriodEnd}
                           </span>
                         ) : (
                           <span>自 {budget.startDate} 起</span>
@@ -480,7 +472,11 @@ export default function BudgetsPage() {
                 <Select
                   value={form.cycleType}
                   onValueChange={(v) =>
-                    setForm((prev) => ({ ...prev, cycleType: v as BudgetCycleType }))
+                    setForm((prev) => ({
+                      ...prev,
+                      cycleType: v as BudgetCycleType,
+                      cycleDays: v === 'custom' ? prev.cycleDays || '30' : prev.cycleDays,
+                    }))
                   }
                 >
                   <SelectTrigger>
@@ -513,6 +509,19 @@ export default function BudgetsPage() {
                       type="date"
                       value={form.endDate}
                       onChange={(e) => setForm((prev) => ({ ...prev, endDate: e.target.value }))}
+                    />
+                  </div>
+                )}
+                {form.cycleType === 'custom' && (
+                  <div className="grid gap-2">
+                    <Label htmlFor="budget-cycle-days">周期天数</Label>
+                    <Input
+                      id="budget-cycle-days"
+                      type="number"
+                      min="2"
+                      step="1"
+                      value={form.cycleDays}
+                      onChange={(e) => setForm((prev) => ({ ...prev, cycleDays: e.target.value }))}
                     />
                   </div>
                 )}

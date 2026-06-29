@@ -41,19 +41,29 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import type { IAccount, IBudget, ITransaction, TransactionCategory } from '@/types/finance';
+import type { IAccount, IBudget, ITransaction, TransactionCategory, TransactionType } from '@/types/finance';
 import { DEFAULT_CATEGORIES, ACCOUNT_TYPE_LABELS } from '@/data/finance';
 import { exportAllData, importAllData } from '@/lib/storage';
 import { createTransaction, deleteTransaction, loadAccounts, loadBudgets, loadTransactions, updateTransaction } from '@/lib/data-service';
 import { getElectronAPI, isElectronRuntime } from '@/lib/electron-api';
 
 const CATEGORIES: TransactionCategory[] = DEFAULT_CATEGORIES;
+const IS_ELECTRON = isElectronRuntime();
+const TRANSACTION_TYPE_LABELS: Record<TransactionType, string> = {
+  normal: '普通收支',
+  repayment_out: '还款扣款',
+  repayment_in: '还款入账',
+  installment_bill: '分期账单',
+};
 
 interface TransactionFormData {
   date: string;
+  transactionType: 'normal' | 'repayment_out' | 'installment_bill';
   accountId: string;
+  repaymentTargetAccountId: string;
   amount: string;
   isExpense: boolean;
+  installmentCount: string;
   category: TransactionCategory;
   note: string;
   isBudgeted: boolean;
@@ -62,9 +72,12 @@ interface TransactionFormData {
 
 const EMPTY_FORM: TransactionFormData = {
   date: new Date().toISOString().slice(0, 10),
+  transactionType: 'normal',
   accountId: '',
+  repaymentTargetAccountId: '',
   amount: '',
   isExpense: true,
+  installmentCount: '3',
   category: '餐饮',
   note: '',
   isBudgeted: false,
@@ -173,6 +186,11 @@ export default function TransactionsPage() {
     const b = budgets.find((b) => b.id === id);
     return b ? b.name : '';
   };
+  const getTransactionTypeLabel = (type?: TransactionType) => TRANSACTION_TYPE_LABELS[type || 'normal'];
+  const selectedAccount = accounts.find((account) => account.id === form.accountId);
+  const repaymentTargets = accounts.filter((account) => account.type === 'credit_card' || account.type === 'alipay_huabei');
+  const debitAccounts = accounts.filter((account) => account.type === 'debit_card');
+  const canUseInstallment = selectedAccount?.type === 'credit_card' || selectedAccount?.type === 'alipay_huabei';
 
   // Form handlers
   const openAddDialog = () => {
@@ -182,12 +200,19 @@ export default function TransactionsPage() {
   };
 
   const openEditDialog = (txn: ITransaction) => {
+    if (txn.transactionType && txn.transactionType !== 'normal') {
+      toast.info('自动生成的分期/还款记录暂不支持直接编辑，请删除后重建');
+      return;
+    }
     setEditingId(txn.id);
     setForm({
       date: txn.date,
+      transactionType: 'normal',
       accountId: txn.accountId,
+      repaymentTargetAccountId: txn.transferAccountId || '',
       amount: String(Math.abs(txn.amount)),
       isExpense: txn.amount < 0,
+      installmentCount: txn.installmentTotal ? String(txn.installmentTotal) : '3',
       category: txn.category,
       note: txn.note,
       isBudgeted: txn.isBudgeted,
@@ -200,6 +225,20 @@ export default function TransactionsPage() {
     e.preventDefault();
     if (!form.accountId || !form.amount || Number(form.amount) <= 0) {
       toast.error('请填写完整的交易信息');
+      return;
+    }
+    if (form.transactionType === 'repayment_out') {
+      if (!form.repaymentTargetAccountId) {
+        toast.error('请选择还款目标账户');
+        return;
+      }
+      if (form.repaymentTargetAccountId === form.accountId) {
+        toast.error('扣款账户和还款目标账户不能相同');
+        return;
+      }
+    }
+    if (form.transactionType === 'installment_bill' && (!form.installmentCount || Number(form.installmentCount) < 2)) {
+      toast.error('分期至少需要 2 期');
       return;
     }
     if (form.isBudgeted && !form.budgetId) {
@@ -235,11 +274,21 @@ export default function TransactionsPage() {
           note: form.note,
           isBudgeted: form.isBudgeted,
           budgetId: form.isBudgeted ? form.budgetId : undefined,
+          transactionType: form.transactionType,
+          transferAccountId: form.transactionType === 'repayment_out' ? form.repaymentTargetAccountId : undefined,
+          repaymentTargetAccountId: form.transactionType === 'repayment_out' ? form.repaymentTargetAccountId : undefined,
+          installmentCount: form.transactionType === 'installment_bill' ? Number(form.installmentCount) : undefined,
         });
         if (!created) {
           toast.error('交易记录创建失败');
         } else {
-          toast.success('交易记录已添加');
+          toast.success(
+            form.transactionType === 'installment_bill'
+              ? '分期账单已生成'
+              : form.transactionType === 'repayment_out'
+                ? '还款记录已添加'
+                : '交易记录已添加',
+          );
         }
       }
 
@@ -331,7 +380,7 @@ export default function TransactionsPage() {
 
   // Totals
   const totalIncome = useMemo(
-    () => filtered.filter((t) => t.amount > 0).reduce((s, t) => s + t.amount, 0),
+    () => filtered.filter((t) => t.amount > 0 && t.transactionType !== 'repayment_in').reduce((s, t) => s + t.amount, 0),
     [filtered]
   );
   const totalExpense = useMemo(
@@ -374,7 +423,7 @@ export default function TransactionsPage() {
               <Download className="size-4" />
               导出
             </Button>
-            {isElectronRuntime ? (
+            {IS_ELECTRON ? (
               <Button variant="outline" size="sm" onClick={handleImportDatabase} disabled={importing}>
                 <Upload className="size-4" />
                 {importing ? '导入中...' : '导入'}
@@ -583,6 +632,7 @@ export default function TransactionsPage() {
                       <TableHead className="whitespace-nowrap">日期</TableHead>
                       <TableHead className="whitespace-nowrap">账户</TableHead>
                       <TableHead className="whitespace-nowrap">分类</TableHead>
+                      <TableHead className="whitespace-nowrap">类型</TableHead>
                       <TableHead className="whitespace-nowrap text-right">金额</TableHead>
                       <TableHead className="whitespace-nowrap">备注</TableHead>
                       <TableHead className="whitespace-nowrap">预算</TableHead>
@@ -606,6 +656,11 @@ export default function TransactionsPage() {
                             {txn.category}
                           </Badge>
                         </TableCell>
+                        <TableCell className="whitespace-nowrap">
+                          <Badge variant={txn.transactionType && txn.transactionType !== 'normal' ? 'secondary' : 'outline'} className="text-xs">
+                            {getTransactionTypeLabel(txn.transactionType)}
+                          </Badge>
+                        </TableCell>
                         <TableCell
                           className={`whitespace-nowrap text-right text-sm font-semibold tabular-nums ${
                             txn.amount >= 0 ? 'text-success' : 'text-destructive'
@@ -615,6 +670,16 @@ export default function TransactionsPage() {
                         </TableCell>
                         <TableCell className="max-w-[160px]">
                           <span className="block truncate text-sm">{txn.note || '-'}</span>
+                          {txn.transferAccountId && (
+                            <span className="block truncate text-xs text-muted-foreground">
+                              对方账户：{getAccountName(txn.transferAccountId)}
+                            </span>
+                          )}
+                          {txn.installmentPlanId && txn.installmentIndex && txn.installmentTotal && (
+                            <span className="block truncate text-xs text-muted-foreground">
+                              分期：第 {txn.installmentIndex}/{txn.installmentTotal} 期
+                            </span>
+                          )}
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
                           {txn.isBudgeted && txn.budgetId ? (
@@ -633,6 +698,7 @@ export default function TransactionsPage() {
                               className="h-8 w-8"
                               onClick={() => openEditDialog(txn)}
                               aria-label="编辑"
+                              disabled={txn.transactionType !== 'normal' && txn.transactionType !== undefined}
                             >
                               <Pencil className="size-3.5" />
                             </Button>
@@ -684,6 +750,32 @@ export default function TransactionsPage() {
               <div className="grid gap-1.5">
                 <Label>账户</Label>
                 <Select
+                  value={form.transactionType}
+                  onValueChange={(value) =>
+                    setForm((prev) => ({
+                      ...prev,
+                      transactionType: value as TransactionFormData['transactionType'],
+                      accountId: '',
+                      repaymentTargetAccountId: '',
+                      isExpense: value === 'normal' ? prev.isExpense : true,
+                      installmentCount: value === 'installment_bill' ? prev.installmentCount || '3' : prev.installmentCount,
+                    }))
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="交易类型" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="normal">普通收支</SelectItem>
+                    <SelectItem value="repayment_out">信用卡/花呗还款</SelectItem>
+                    <SelectItem value="installment_bill">分期账单自动录入</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
+              <div className="grid gap-1.5">
+                <Label>{form.transactionType === 'repayment_out' ? '扣款账户（储蓄卡）' : '账户'}</Label>
+                <Select
                   value={form.accountId}
                   onValueChange={(v) => setForm({ ...form, accountId: v })}
                 >
@@ -691,7 +783,7 @@ export default function TransactionsPage() {
                     <SelectValue placeholder="选择账户" />
                   </SelectTrigger>
                   <SelectContent>
-                    {accounts.map((a: { id: string; name: string }) => (
+                    {(form.transactionType === 'repayment_out' ? debitAccounts : accounts).map((a: { id: string; name: string }) => (
                       <SelectItem key={a.id} value={a.id}>
                         {a.name}
                       </SelectItem>
@@ -700,19 +792,46 @@ export default function TransactionsPage() {
                 </Select>
               </div>
 
+              {form.transactionType === 'repayment_out' && (
+                <div className="grid gap-1.5">
+                  <Label>还款目标账户</Label>
+                  <Select
+                    value={form.repaymentTargetAccountId}
+                    onValueChange={(v) => setForm({ ...form, repaymentTargetAccountId: v })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="选择信用卡或花呗账户" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {repaymentTargets.map((account) => (
+                        <SelectItem key={account.id} value={account.id}>
+                          {account.name}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
               {/* Amount + type */}
               <div className="grid gap-1.5">
                 <Label htmlFor="txn-amount">金额</Label>
                 <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    variant={form.isExpense ? 'destructive' : 'outline'}
-                    size="sm"
-                    className="shrink-0"
-                    onClick={() => setForm({ ...form, isExpense: !form.isExpense })}
-                  >
-                    {form.isExpense ? '支出' : '收入'}
-                  </Button>
+                  {form.transactionType === 'normal' ? (
+                    <Button
+                      type="button"
+                      variant={form.isExpense ? 'destructive' : 'outline'}
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => setForm({ ...form, isExpense: !form.isExpense })}
+                    >
+                      {form.isExpense ? '支出' : '收入'}
+                    </Button>
+                  ) : (
+                    <Badge variant="secondary" className="shrink-0 h-9 px-3 flex items-center">
+                      {form.transactionType === 'repayment_out' ? '还款金额' : '每期金额'}
+                    </Badge>
+                  )}
                   <Input
                     id="txn-amount"
                     type="number"
@@ -726,6 +845,21 @@ export default function TransactionsPage() {
                   />
                 </div>
               </div>
+
+              {form.transactionType === 'installment_bill' && (
+                <div className="grid gap-1.5">
+                  <Label htmlFor="txn-installments">分期期数</Label>
+                  <Input
+                    id="txn-installments"
+                    type="number"
+                    min="2"
+                    step="1"
+                    value={form.installmentCount}
+                    onChange={(e) => setForm({ ...form, installmentCount: e.target.value })}
+                    placeholder="如：3 / 6 / 12"
+                  />
+                </div>
+              )}
 
               {/* Category */}
               <div className="grid gap-1.5">
@@ -760,18 +894,20 @@ export default function TransactionsPage() {
               </div>
 
               {/* Budget toggle */}
-              <div className="flex items-center justify-between">
-                <Label htmlFor="txn-budgeted" className="cursor-pointer">
-                  是否预算内
-                </Label>
-                <Switch
-                  id="txn-budgeted"
-                  checked={form.isBudgeted}
-                  onCheckedChange={(checked) =>
-                    setForm({ ...form, isBudgeted: checked, budgetId: checked ? form.budgetId : '' })
-                  }
-                />
-              </div>
+              {form.transactionType !== 'repayment_out' && (
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="txn-budgeted" className="cursor-pointer">
+                    是否预算内
+                  </Label>
+                  <Switch
+                    id="txn-budgeted"
+                    checked={form.isBudgeted}
+                    onCheckedChange={(checked) =>
+                      setForm({ ...form, isBudgeted: checked, budgetId: checked ? form.budgetId : '' })
+                    }
+                  />
+                </div>
+              )}
 
               {form.isBudgeted && (
                 <div className="grid gap-1.5">

@@ -4,6 +4,11 @@
 import { api } from './client';
 import type { ITransaction, IBudget, IAccount } from '@/types/finance';
 
+export interface CreateTransactionInput extends Partial<ITransaction> {
+  repaymentTargetAccountId?: string;
+  installmentCount?: number;
+}
+
 // ============================================================
 // 账户 API
 // ============================================================
@@ -40,7 +45,7 @@ export const transactionsApi = {
     return api.get<{ success: boolean; data: ITransaction[] }>(`/api/transactions${qs ? `?${qs}` : ''}`);
   },
   get: (id: string) => api.get<{ success: boolean; data: ITransaction }>(`/api/transactions/${id}`),
-  create: (data: Partial<ITransaction>) => api.post<{ success: boolean; data: ITransaction }>('/api/transactions', data),
+  create: (data: CreateTransactionInput) => api.post<{ success: boolean; data: ITransaction; items?: ITransaction[] }>('/api/transactions', data),
   update: (id: string, data: Partial<ITransaction>) => api.put<{ success: boolean; data: ITransaction }>(`/api/transactions/${id}`, data),
   remove: (id: string) => api.delete<{ success: boolean }>(`/api/transactions/${id}`),
 };
@@ -52,6 +57,8 @@ export interface BudgetWithStats extends IBudget {
   used: number;
   rate: number;
   remaining: number;
+  currentPeriodStart?: string;
+  currentPeriodEnd?: string;
 }
 
 export const budgetsApi = {

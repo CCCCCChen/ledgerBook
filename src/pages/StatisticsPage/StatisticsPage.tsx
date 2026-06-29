@@ -6,11 +6,14 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import { AlertTriangle, TrendingUp } from 'lucide-react';
 import { CHART_COLORS } from '@/lib/chart-colors';
 import { ACCOUNT_TYPE_LABELS } from '@/data/finance';
-import type { ITransaction, IBudget, IAccount, TransactionCategory } from '@/types/finance';
+import type { ITransaction, IBudget, IAccount } from '@/types/finance';
 import { loadAccounts, loadBudgets, loadTransactions } from '@/lib/data-service';
+import { getBudgetCycleWindow, getBudgetUsedInWindow, listBudgetSettlementsForMonth } from '@/lib/finance-utils';
 
 type TimeGranularity = 'daily' | 'weekly' | 'monthly';
 
@@ -48,6 +51,10 @@ export default function StatisticsPage() {
   const [budgets, setBudgets] = useState<IBudget[]>([]);
   const [accounts, setAccounts] = useState<IAccount[]>([]);
   const [timeGranularity, setTimeGranularity] = useState<TimeGranularity>('daily');
+  const [includeBudgetSettlement, setIncludeBudgetSettlement] = useState(true);
+  const today = new Date();
+  const todayISO = today.toISOString().slice(0, 10);
+  const monthEndISO = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().slice(0, 10);
 
   useEffect(() => {
     (async () => {
@@ -62,24 +69,63 @@ export default function StatisticsPage() {
     })().catch(() => {});
   }, []);
 
-  const expenses = useMemo(
-    () => transactions.filter((t) => t.amount < 0).map((t) => ({ ...t, amount: Math.abs(t.amount) })),
-    [transactions],
+  const actualTransactions = useMemo(
+    () => transactions.filter((transaction) => transaction.date <= todayISO),
+    [transactions, todayISO],
   );
+
+  const actualExpenses = useMemo(
+    () => actualTransactions.filter((t) => t.amount < 0).map((t) => ({ ...t, amount: Math.abs(t.amount) })),
+    [actualTransactions],
+  );
+
+  const futureExpenseTransactions = useMemo(
+    () =>
+      transactions
+        .filter((transaction) => transaction.amount < 0 && transaction.date > todayISO && transaction.date <= monthEndISO)
+        .map((transaction) => ({ ...transaction, amount: Math.abs(transaction.amount) })),
+    [transactions, todayISO, monthEndISO],
+  );
+
+  const budgetSettlementItems = useMemo(
+    () => listBudgetSettlementsForMonth(budgets, transactions, today).filter((item) => item.expectedAmount > 0),
+    [budgets, transactions, today],
+  );
+
+  const futureExpenseItems = useMemo(() => {
+    const transactionItems = futureExpenseTransactions.map((transaction) => ({
+      id: transaction.id,
+      type: transaction.transactionType === 'installment_bill' ? 'installment' : 'future',
+      title: transaction.note || '未来支出',
+      date: transaction.date,
+      amount: transaction.amount,
+      accountId: transaction.accountId,
+    }));
+    const budgetItems = includeBudgetSettlement
+      ? budgetSettlementItems.map((item) => ({
+          id: `budget-${item.budgetId}-${item.cycleEnd}`,
+          type: 'budget',
+          title: `${item.budgetName} 预算结算`,
+          date: item.cycleEnd,
+          amount: item.expectedAmount,
+          accountId: '',
+        }))
+      : [];
+    return [...transactionItems, ...budgetItems].sort((a, b) => a.date.localeCompare(b.date));
+  }, [futureExpenseTransactions, includeBudgetSettlement, budgetSettlementItems]);
 
   // ---- 超支预警 ----
   const overBudgetAlerts = useMemo(() => {
     return budgets
       .map((b) => {
-        const used = expenses
-          .filter((t) => t.budgetId === b.id)
-          .reduce((sum, t) => sum + t.amount, 0);
+        const window = getBudgetCycleWindow(b, today);
+        const used = getBudgetUsedInWindow(b, transactions, window);
         const rate = b.amount > 0 ? used / b.amount : 0;
         return { ...b, used, rate };
       })
       .filter((b) => b.rate > 0.8)
       .sort((a, b) => b.rate - a.rate);
-  }, [budgets, expenses]);
+  }, [budgets, transactions, today]);
 
   // ---- 账单周期统计 ----
   const billingCycleOption = useMemo(() => {
@@ -94,7 +140,7 @@ export default function StatisticsPage() {
 
     billingAccounts.forEach((acc) => {
       const { start, end } = getBillingCycleRange(acc.billingDay!, now);
-      const total = expenses
+      const total = actualExpenses
         .filter((t) => t.accountId === acc.id && t.date >= start && t.date <= end)
         .reduce((sum, t) => sum + t.amount, 0);
       names.push(acc.name);
@@ -118,16 +164,17 @@ export default function StatisticsPage() {
         },
       ],
     };
-  }, [accounts, expenses]);
+  }, [accounts, actualExpenses]);
 
   // ---- 预算执行对比 ----
   const budgetCompareOption = useMemo(() => {
     if (budgets.length === 0) return null;
     const names = budgets.map((b) => b.name);
     const budgetAmounts = budgets.map((b) => b.amount);
-    const usedAmounts = budgets.map((b) =>
-      expenses.filter((t) => t.budgetId === b.id).reduce((sum, t) => sum + t.amount, 0),
-    );
+    const usedAmounts = budgets.map((budget) => {
+      const window = getBudgetCycleWindow(budget, today);
+      return getBudgetUsedInWindow(budget, transactions, window);
+    });
 
     return {
       tooltip: { trigger: 'axis' },
@@ -156,12 +203,12 @@ export default function StatisticsPage() {
         },
       ],
     };
-  }, [budgets, expenses]);
+  }, [budgets, transactions, today]);
 
   // ---- 分类支出分布 ----
   const categoryPieOption = useMemo(() => {
     const categoryMap: Record<string, number> = {};
-    expenses.forEach((t) => {
+    actualExpenses.forEach((t) => {
       categoryMap[t.category] = (categoryMap[t.category] || 0) + t.amount;
     });
     const data = Object.entries(categoryMap).map(([name, value]) => ({ name, value }));
@@ -184,13 +231,13 @@ export default function StatisticsPage() {
         },
       ],
     };
-  }, [expenses]);
+  }, [actualExpenses]);
 
   // ---- 时间趋势 ----
   const trendOption = useMemo(() => {
-    if (expenses.length === 0) return null;
+    if (actualExpenses.length === 0) return null;
 
-    const sorted = [...expenses].sort((a, b) => a.date.localeCompare(b.date));
+    const sorted = [...actualExpenses].sort((a, b) => a.date.localeCompare(b.date));
     const buckets: Record<string, number> = {};
 
     sorted.forEach((t) => {
@@ -238,14 +285,14 @@ export default function StatisticsPage() {
         },
       ],
     };
-  }, [expenses, timeGranularity]);
+  }, [actualExpenses, timeGranularity]);
 
   // ---- 账户支出对比 ----
   const accountCompareOption = useMemo(() => {
     if (accounts.length === 0) return null;
     const names = accounts.map((a) => a.name);
     const values = accounts.map((a) =>
-      expenses.filter((t) => t.accountId === a.id).reduce((sum, t) => sum + t.amount, 0),
+      actualExpenses.filter((t) => t.accountId === a.id).reduce((sum, t) => sum + t.amount, 0),
     );
 
     return {
@@ -267,13 +314,19 @@ export default function StatisticsPage() {
         },
       ],
     };
-  }, [accounts, expenses]);
+  }, [accounts, actualExpenses]);
 
-  const totalExpense = useMemo(() => expenses.reduce((sum, t) => sum + t.amount, 0), [expenses]);
+  const totalExpense = useMemo(() => actualExpenses.reduce((sum, t) => sum + t.amount, 0), [actualExpenses]);
   const totalIncome = useMemo(
-    () => transactions.filter((t) => t.amount > 0).reduce((sum, t) => sum + t.amount, 0),
-    [transactions],
+    () => actualTransactions.filter((t) => t.amount > 0 && t.transactionType !== 'repayment_in').reduce((sum, t) => sum + t.amount, 0),
+    [actualTransactions],
   );
+  const currentBalance = totalIncome - totalExpense;
+  const expectedOutflow = useMemo(
+    () => futureExpenseItems.reduce((sum, item) => sum + item.amount, 0),
+    [futureExpenseItems],
+  );
+  const expectedBalance = currentBalance - expectedOutflow;
 
   return (
     <div className="min-h-screen bg-background">
@@ -285,7 +338,7 @@ export default function StatisticsPage() {
         </div>
 
         {/* 概览卡片 */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           <Card>
             <CardHeader className="pb-2">
               <CardDescription>总支出</CardDescription>
@@ -322,7 +375,63 @@ export default function StatisticsPage() {
               <p className="text-2xl font-bold tabular-nums">{budgets.length}</p>
             </CardContent>
           </Card>
+          <Card>
+            <CardHeader className="pb-2">
+              <CardDescription>预期结余</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <p className={`text-2xl font-bold tabular-nums ${expectedBalance >= 0 ? 'text-foreground' : 'text-destructive'}`}>
+                ¥{expectedBalance.toLocaleString()}
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">本月待发生支出 ¥{expectedOutflow.toLocaleString()}</p>
+            </CardContent>
+          </Card>
         </div>
+
+        <Card>
+          <CardContent className="pt-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
+            <div>
+              <p className="font-medium">预期支出设置</p>
+              <p className="text-sm text-muted-foreground">开启后会将当前月内到期的预算结算额纳入预期结余</p>
+            </div>
+            <div className="flex items-center gap-2">
+              <Label htmlFor="include-budget-settlement">考虑预算结算</Label>
+              <Switch
+                id="include-budget-settlement"
+                checked={includeBudgetSettlement}
+                onCheckedChange={setIncludeBudgetSettlement}
+              />
+            </div>
+          </CardContent>
+        </Card>
+
+        {futureExpenseItems.length > 0 && (
+          <Card>
+            <CardHeader>
+              <CardTitle>预期支出</CardTitle>
+              <CardDescription>展示本月尚未发生的分期账单、未来支出和预算结算</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {futureExpenseItems.map((item) => (
+                <div key={item.id} className="flex items-start justify-between gap-3 rounded-lg border p-3">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <p className="font-medium">{item.title}</p>
+                      <Badge variant="outline" className="text-xs">
+                        {item.type === 'budget' ? '预算结算' : item.type === 'installment' ? '分期账单' : '未来支出'}
+                      </Badge>
+                    </div>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      {item.date}
+                      {item.accountId ? ` · ${accounts.find((account) => account.id === item.accountId)?.name || '未知账户'}` : ''}
+                    </p>
+                  </div>
+                  <p className="font-semibold text-destructive tabular-nums">¥{item.amount.toLocaleString()}</p>
+                </div>
+              ))}
+            </CardContent>
+          </Card>
+        )}
 
         {/* 超支预警 */}
         {overBudgetAlerts.length > 0 && (

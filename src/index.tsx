@@ -7,8 +7,9 @@ import './index.css';
 import { isElectronRuntime } from '@/lib/electron-api';
 
 const APP_NAME = '个人收支预算管家';
+const IN_ELECTRON = isElectronRuntime();
 const browserBasename = import.meta.env.BASE_URL === './' ? '/' : import.meta.env.BASE_URL;
-const Router = isElectronRuntime ? HashRouter : BrowserRouter;
+const Router = IN_ELECTRON ? HashRouter : BrowserRouter;
 
 document.title = APP_NAME;
 
@@ -41,7 +42,7 @@ function RootErrorFallback({
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <Router basename={isElectronRuntime ? undefined : browserBasename}>
+    <Router basename={IN_ELECTRON ? undefined : browserBasename}>
       <ErrorBoundary fallbackRender={RootErrorFallback}>
         <App />
       </ErrorBoundary>

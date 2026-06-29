@@ -2,7 +2,15 @@
 // Electron 环境：调用后端 RESTful API（Express + SQLite）
 // 浏览器开发环境：使用 localStorage（兼容原有行为）
 
-import { accountsApi, transactionsApi, budgetsApi, statisticsApi, type TransactionFilters, type BudgetWithStats } from '@/api/index';
+import {
+  accountsApi,
+  transactionsApi,
+  budgetsApi,
+  statisticsApi,
+  type TransactionFilters,
+  type BudgetWithStats,
+  type CreateTransactionInput,
+} from '@/api/index';
 import type { ITransaction, IBudget, IAccount } from '@/types/finance';
 import { MOCK_ACCOUNTS, MOCK_BUDGETS, MOCK_TRANSACTIONS } from '@/data/finance';
 import {
@@ -12,6 +20,7 @@ import {
   exportAllData,
   importAllData,
 } from './storage';
+import { getBudgetCycleWindow, getBudgetRate, getBudgetUsedInWindow } from './finance-utils';
 
 // ============================================================
 // localStorage 辅助函数
@@ -152,15 +161,88 @@ export async function saveTransactions(transactions: ITransaction[]): Promise<vo
   lsSaveTransactions(transactions);
 }
 
-export async function createTransaction(data: Partial<ITransaction>): Promise<ITransaction | null> {
+export async function createTransaction(data: CreateTransactionInput): Promise<ITransaction | null> {
   if (isElectron()) {
     try {
-      const res = await transactionsApi.create(data);
+      const res = await transactionsApi.create(data as CreateTransactionInput);
       return res.data;
     } catch {
       return null;
     }
   }
+  if (data.transactionType === 'repayment_out' && data.accountId && data.transferAccountId && data.amount != null) {
+    const amount = Math.abs(Number(data.amount));
+    const now = new Date().toISOString();
+    const pairId = `pair-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const outTxn: ITransaction = {
+      id: `txn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      date: data.date || now.slice(0, 10),
+      accountId: data.accountId,
+      amount: -amount,
+      category: '其他',
+      note: `${data.note || '信用账户还款'}（扣款）`,
+      isBudgeted: false,
+      transactionType: 'repayment_out',
+      transferAccountId: data.transferAccountId,
+      pairedTransactionId: pairId,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const inTxn: ITransaction = {
+      id: `txn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-r`,
+      date: data.date || now.slice(0, 10),
+      accountId: data.transferAccountId,
+      amount,
+      category: '其他',
+      note: `${data.note || '信用账户还款'}（入账）`,
+      isBudgeted: false,
+      transactionType: 'repayment_in',
+      transferAccountId: data.accountId,
+      pairedTransactionId: pairId,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const txns = lsLoadTransactions();
+    txns.push(outTxn, inTxn);
+    lsSaveTransactions(txns);
+    return outTxn;
+  }
+
+  const installmentCount = Number((data as CreateTransactionInput).installmentCount || 1);
+  if (data.transactionType === 'installment_bill' && installmentCount >= 2) {
+    const txns = lsLoadTransactions();
+    const now = new Date().toISOString();
+    const planId = `inst-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const totalAmount = Math.abs(Number(data.amount || 0));
+    const base = Math.round((totalAmount / installmentCount) * 100) / 100;
+    let allocated = 0;
+    for (let index = 0; index < installmentCount; index += 1) {
+      const isLast = index === installmentCount - 1;
+      const amount = isLast ? Math.round((totalAmount - allocated) * 100) / 100 : base;
+      allocated += amount;
+      const date = new Date(`${data.date || now.slice(0, 10)}T00:00:00`);
+      date.setMonth(date.getMonth() + index);
+      txns.push({
+        id: `txn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${index + 1}`,
+        date: date.toISOString().slice(0, 10),
+        accountId: data.accountId || '',
+        amount: -amount,
+        category: data.category || '其他',
+        note: `${data.note || '分期账单'}（第 ${index + 1}/${installmentCount} 期）`,
+        isBudgeted: data.isBudgeted || false,
+        budgetId: data.budgetId,
+        transactionType: 'installment_bill',
+        installmentPlanId: planId,
+        installmentIndex: index + 1,
+        installmentTotal: installmentCount,
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+    lsSaveTransactions(txns);
+    return txns[txns.length - installmentCount];
+  }
+
   const txns = lsLoadTransactions();
   const id = `txn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const now = new Date().toISOString();
@@ -173,6 +255,12 @@ export async function createTransaction(data: Partial<ITransaction>): Promise<IT
     note: data.note || '',
     isBudgeted: data.isBudgeted || false,
     budgetId: data.budgetId,
+    transactionType: data.transactionType || 'normal',
+    transferAccountId: data.transferAccountId,
+    pairedTransactionId: data.pairedTransactionId,
+    installmentPlanId: data.installmentPlanId,
+    installmentIndex: data.installmentIndex,
+    installmentTotal: data.installmentTotal,
     createdAt: now,
     updatedAt: now,
   };
@@ -207,7 +295,18 @@ export async function deleteTransaction(id: string): Promise<boolean> {
       return false;
     }
   }
-  const txns = lsLoadTransactions().filter((t) => t.id !== id);
+  const current = lsLoadTransactions();
+  const existing = current.find((t) => t.id === id);
+  if (!existing) return false;
+  const txns = current.filter((transaction) => {
+    if (existing.pairedTransactionId) {
+      return transaction.pairedTransactionId !== existing.pairedTransactionId;
+    }
+    if (existing.installmentPlanId) {
+      return transaction.installmentPlanId !== existing.installmentPlanId;
+    }
+    return transaction.id !== id;
+  });
   lsSaveTransactions(txns);
   return true;
 }
@@ -224,7 +323,18 @@ export async function loadBudgets(): Promise<BudgetWithStats[]> {
       return lsLoadBudgets().map((b) => ({ ...b, used: 0, rate: 0, remaining: b.amount }));
     }
   }
-  return lsLoadBudgets().map((b) => ({ ...b, used: 0, rate: 0, remaining: b.amount }));
+  return lsLoadBudgets().map((budget) => {
+    const window = getBudgetCycleWindow(budget);
+    const used = getBudgetUsedInWindow(budget, lsLoadTransactions(), window);
+    return {
+      ...budget,
+      used,
+      rate: getBudgetRate(used, budget.amount),
+      remaining: Math.max(0, budget.amount - used),
+      currentPeriodStart: window?.start,
+      currentPeriodEnd: window?.end,
+    };
+  });
 }
 
 export async function saveBudgets(budgets: IBudget[]): Promise<void> {
@@ -251,6 +361,7 @@ export async function createBudget(data: Partial<IBudget>): Promise<BudgetWithSt
     cycleType: data.cycleType || 'monthly',
     startDate: data.startDate || now.slice(0, 10),
     endDate: data.endDate,
+    cycleDays: data.cycleDays,
     category: data.category,
     createdAt: now,
     updatedAt: now,

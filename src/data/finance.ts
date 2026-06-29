@@ -17,6 +17,7 @@ export const BUDGET_CYCLE_LABELS: Record<BudgetCycleType, string> = {
   weekly: '每周固定',
   monthly: '每月固定',
   yearly: '每年固定',
+  custom: '自定义周期',
 };
 
 export const MOCK_ACCOUNTS: IAccount[] = [
@@ -118,6 +119,7 @@ export const MOCK_TRANSACTIONS: ITransaction[] = [
     category: '购物',
     note: '优衣库T恤',
     isBudgeted: false,
+    transactionType: 'normal',
     createdAt: '2026-06-24T15:30:00.000Z',
     updatedAt: '2026-06-24T15:30:00.000Z',
   },
@@ -130,6 +132,7 @@ export const MOCK_TRANSACTIONS: ITransaction[] = [
     note: '瑞幸咖啡',
     isBudgeted: true,
     budgetId: 'bud-2',
+    transactionType: 'normal',
     createdAt: '2026-06-23T09:00:00.000Z',
     updatedAt: '2026-06-23T09:00:00.000Z',
   },
@@ -141,6 +144,7 @@ export const MOCK_TRANSACTIONS: ITransaction[] = [
     category: '其他',
     note: '6月工资',
     isBudgeted: false,
+    transactionType: 'normal',
     createdAt: '2026-06-22T10:00:00.000Z',
     updatedAt: '2026-06-22T10:00:00.000Z',
   },
@@ -153,6 +157,7 @@ export const MOCK_TRANSACTIONS: ITransaction[] = [
     note: 'MG 自由高达 2.0',
     isBudgeted: true,
     budgetId: 'bud-3',
+    transactionType: 'normal',
     createdAt: '2026-06-20T20:00:00.000Z',
     updatedAt: '2026-06-20T20:00:00.000Z',
   },

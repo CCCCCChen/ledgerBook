@@ -1,35 +1,14 @@
 const express = require('express');
 const router = express.Router();
 const { getDatabase } = require('../db.cjs');
+const { mapBudgetRow, createBudgetStats } = require('../finance-utils.cjs');
 
 // GET /api/budgets — 获取所有预算项目（含执行统计）
 router.get('/', (req, res) => {
   try {
     const db = getDatabase();
     const budgets = db.prepare('SELECT * FROM budgets ORDER BY created_at DESC').all();
-    const stats = budgets.map((b) => {
-      const usedRow = db.prepare(`
-        SELECT COALESCE(SUM(ABS(amount)), 0) AS used
-        FROM transactions
-        WHERE budget_id = ? AND amount < 0
-      `).get(b.id);
-      const used = usedRow ? usedRow.used : 0;
-      const rate = b.amount > 0 ? Math.round((used / b.amount) * 100) : 0;
-      return {
-        id: b.id,
-        name: b.name,
-        amount: b.amount,
-        cycleType: b.cycle_type,
-        startDate: b.start_date,
-        endDate: b.end_date,
-        category: b.category,
-        createdAt: b.created_at,
-        updatedAt: b.updated_at,
-        used,
-        rate,
-        remaining: Math.max(0, b.amount - used),
-      };
-    });
+    const stats = budgets.map((budget) => createBudgetStats(db, budget));
     res.json({ success: true, data: stats });
   } catch (error) {
     res.status(500).json({ success: false, message: '获取预算列表失败', error: error.message });
@@ -44,30 +23,7 @@ router.get('/:id', (req, res) => {
     if (!b) {
       return res.status(404).json({ success: false, message: '预算项目不存在' });
     }
-    const usedRow = db.prepare(`
-      SELECT COALESCE(SUM(ABS(amount)), 0) AS used
-      FROM transactions
-      WHERE budget_id = ? AND amount < 0
-    `).get(b.id);
-    const used = usedRow ? usedRow.used : 0;
-    const rate = b.amount > 0 ? Math.round((used / b.amount) * 100) : 0;
-    res.json({
-      success: true,
-      data: {
-        id: b.id,
-        name: b.name,
-        amount: b.amount,
-        cycleType: b.cycle_type,
-        startDate: b.start_date,
-        endDate: b.end_date,
-        category: b.category,
-        createdAt: b.created_at,
-        updatedAt: b.updated_at,
-        used,
-        rate,
-        remaining: Math.max(0, b.amount - used),
-      },
-    });
+    res.json({ success: true, data: createBudgetStats(db, b) });
   } catch (error) {
     res.status(500).json({ success: false, message: '获取预算项目失败', error: error.message });
   }
@@ -77,7 +33,7 @@ router.get('/:id', (req, res) => {
 router.post('/', (req, res) => {
   try {
     const db = getDatabase();
-    const { name, amount, cycleType, startDate, endDate, category } = req.body;
+    const { name, amount, cycleType, startDate, endDate, cycleDays, category } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ success: false, message: '预算名称不能为空' });
@@ -85,45 +41,33 @@ router.post('/', (req, res) => {
     if (!amount || isNaN(amount) || Number(amount) <= 0) {
       return res.status(400).json({ success: false, message: '预算金额必须为正数' });
     }
-    const validCycles = ['once', 'weekly', 'monthly', 'yearly'];
+    const validCycles = ['once', 'weekly', 'monthly', 'yearly', 'custom'];
     if (!cycleType || !validCycles.includes(cycleType)) {
       return res.status(400).json({ success: false, message: '无效的周期类型' });
     }
     if (cycleType === 'once' && !endDate) {
       return res.status(400).json({ success: false, message: '临时预算必须设置结束日期' });
     }
+    if (cycleType === 'custom' && (!cycleDays || Number(cycleDays) < 2)) {
+      return res.status(400).json({ success: false, message: '自定义周期至少需要 2 天' });
+    }
 
     const id = `bud-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
 
     db.prepare(`
-      INSERT INTO budgets (id, name, amount, cycle_type, start_date, end_date, category, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO budgets (id, name, amount, cycle_type, start_date, end_date, cycle_days, category, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id, name.trim(), Number(amount), cycleType,
       startDate || now.slice(0, 10),
       cycleType === 'once' ? endDate : null,
+      cycleType === 'custom' ? Number(cycleDays) : null,
       category || null, now, now,
     );
 
     const created = db.prepare('SELECT * FROM budgets WHERE id = ?').get(id);
-    res.status(201).json({
-      success: true,
-      data: {
-        id: created.id,
-        name: created.name,
-        amount: created.amount,
-        cycleType: created.cycle_type,
-        startDate: created.start_date,
-        endDate: created.end_date,
-        category: created.category,
-        createdAt: created.created_at,
-        updatedAt: created.updated_at,
-        used: 0,
-        rate: 0,
-        remaining: created.amount,
-      },
-    });
+    res.status(201).json({ success: true, data: createBudgetStats(db, created) });
   } catch (error) {
     res.status(500).json({ success: false, message: '创建预算失败', error: error.message });
   }
@@ -138,7 +82,7 @@ router.put('/:id', (req, res) => {
       return res.status(404).json({ success: false, message: '预算项目不存在' });
     }
 
-    const { name, amount, cycleType, startDate, endDate, category } = req.body;
+    const { name, amount, cycleType, startDate, endDate, cycleDays, category } = req.body;
 
     if (name !== undefined && (!name || !name.trim())) {
       return res.status(400).json({ success: false, message: '预算名称不能为空' });
@@ -146,7 +90,7 @@ router.put('/:id', (req, res) => {
     if (amount !== undefined && (isNaN(amount) || Number(amount) <= 0)) {
       return res.status(400).json({ success: false, message: '预算金额必须为正数' });
     }
-    const validCycles = ['once', 'weekly', 'monthly', 'yearly'];
+    const validCycles = ['once', 'weekly', 'monthly', 'yearly', 'custom'];
     const finalCycle = cycleType || existing.cycle_type;
     if (cycleType && !validCycles.includes(cycleType)) {
       return res.status(400).json({ success: false, message: '无效的周期类型' });
@@ -154,12 +98,18 @@ router.put('/:id', (req, res) => {
     if (finalCycle === 'once' && endDate === undefined && !existing.end_date) {
       return res.status(400).json({ success: false, message: '临时预算必须设置结束日期' });
     }
+    if (finalCycle === 'custom') {
+      const finalCycleDays = cycleDays !== undefined ? Number(cycleDays) : existing.cycle_days;
+      if (!finalCycleDays || finalCycleDays < 2) {
+        return res.status(400).json({ success: false, message: '自定义周期至少需要 2 天' });
+      }
+    }
 
     const now = new Date().toISOString();
 
     db.prepare(`
       UPDATE budgets
-      SET name = ?, amount = ?, cycle_type = ?, start_date = ?, end_date = ?, category = ?, updated_at = ?
+      SET name = ?, amount = ?, cycle_type = ?, start_date = ?, end_date = ?, cycle_days = ?, category = ?, updated_at = ?
       WHERE id = ?
     `).run(
       name !== undefined ? name.trim() : existing.name,
@@ -167,37 +117,16 @@ router.put('/:id', (req, res) => {
       finalCycle,
       startDate || existing.start_date,
       finalCycle === 'once' ? (endDate !== undefined ? endDate : existing.end_date) : null,
+      finalCycle === 'custom'
+        ? (cycleDays !== undefined ? Number(cycleDays) : existing.cycle_days)
+        : null,
       category !== undefined ? (category || null) : existing.category,
       now,
       req.params.id,
     );
 
     const updated = db.prepare('SELECT * FROM budgets WHERE id = ?').get(req.params.id);
-    const usedRow = db.prepare(`
-      SELECT COALESCE(SUM(ABS(amount)), 0) AS used
-      FROM transactions
-      WHERE budget_id = ? AND amount < 0
-    `).get(updated.id);
-    const used = usedRow ? usedRow.used : 0;
-    const rate = updated.amount > 0 ? Math.round((used / updated.amount) * 100) : 0;
-
-    res.json({
-      success: true,
-      data: {
-        id: updated.id,
-        name: updated.name,
-        amount: updated.amount,
-        cycleType: updated.cycle_type,
-        startDate: updated.start_date,
-        endDate: updated.end_date,
-        category: updated.category,
-        createdAt: updated.created_at,
-        updatedAt: updated.updated_at,
-        used,
-        rate,
-        remaining: Math.max(0, updated.amount - used),
-      },
-    });
+    res.json({ success: true, data: createBudgetStats(db, updated) });
   } catch (error) {
     res.status(500).json({ success: false, message: '更新预算失败', error: error.message });
   }

@@ -2,6 +2,157 @@ const express = require('express');
 const router = express.Router();
 const { getDatabase } = require('../db.cjs');
 
+function createId(prefix) {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function addMonths(date, months) {
+  const result = new Date(`${date}T00:00:00`);
+  const originalDay = result.getDate();
+  result.setDate(1);
+  result.setMonth(result.getMonth() + months);
+  const lastDay = new Date(result.getFullYear(), result.getMonth() + 1, 0).getDate();
+  result.setDate(Math.min(originalDay, lastDay));
+  return result.toISOString().slice(0, 10);
+}
+
+function buildRepaymentTransactions(payload) {
+  const pairId = createId('pair');
+  const now = new Date().toISOString();
+  const amount = Math.abs(Number(payload.amount));
+  const baseNote = payload.note?.trim() || '信用账户还款';
+
+  return [
+    {
+      id: createId('txn'),
+      date: payload.date,
+      accountId: payload.accountId,
+      amount: -amount,
+      category: '其他',
+      note: `${baseNote}（扣款）`,
+      isBudgeted: false,
+      budgetId: null,
+      transactionType: 'repayment_out',
+      transferAccountId: payload.repaymentTargetAccountId,
+      pairedTransactionId: pairId,
+      installmentPlanId: null,
+      installmentIndex: null,
+      installmentTotal: null,
+      createdAt: now,
+      updatedAt: now,
+    },
+    {
+      id: createId('txn'),
+      date: payload.date,
+      accountId: payload.repaymentTargetAccountId,
+      amount,
+      category: '其他',
+      note: `${baseNote}（入账）`,
+      isBudgeted: false,
+      budgetId: null,
+      transactionType: 'repayment_in',
+      transferAccountId: payload.accountId,
+      pairedTransactionId: pairId,
+      installmentPlanId: null,
+      installmentIndex: null,
+      installmentTotal: null,
+      createdAt: now,
+      updatedAt: now,
+    },
+  ];
+}
+
+function buildInstallmentTransactions(payload) {
+  const installmentCount = Number(payload.installmentCount || 1);
+  const now = new Date().toISOString();
+  const planId = createId('inst');
+  const totalAmount = Math.abs(Number(payload.amount));
+  const base = Math.round((totalAmount / installmentCount) * 100) / 100;
+  const items = [];
+  let allocated = 0;
+
+  for (let index = 0; index < installmentCount; index += 1) {
+    const isLast = index === installmentCount - 1;
+    const amount = isLast ? Math.round((totalAmount - allocated) * 100) / 100 : base;
+    allocated += amount;
+    items.push({
+      id: createId('txn'),
+      date: addMonths(payload.date, index),
+      accountId: payload.accountId,
+      amount: -amount,
+      category: payload.category,
+      note: `${payload.note || '分期账单'}（第 ${index + 1}/${installmentCount} 期）`,
+      isBudgeted: Boolean(payload.isBudgeted),
+      budgetId: payload.isBudgeted && payload.budgetId ? payload.budgetId : null,
+      transactionType: 'installment_bill',
+      transferAccountId: null,
+      pairedTransactionId: null,
+      installmentPlanId: planId,
+      installmentIndex: index + 1,
+      installmentTotal: installmentCount,
+      createdAt: now,
+      updatedAt: now,
+    });
+  }
+
+  return items;
+}
+
+function buildNormalTransaction(payload) {
+  const now = new Date().toISOString();
+  return [{
+    id: createId('txn'),
+    date: payload.date,
+    accountId: payload.accountId,
+    amount: Number(payload.amount),
+    category: payload.category,
+    note: payload.note || '',
+    isBudgeted: Boolean(payload.isBudgeted),
+    budgetId: payload.isBudgeted && payload.budgetId ? payload.budgetId : null,
+    transactionType: payload.transactionType || 'normal',
+    transferAccountId: payload.transferAccountId || null,
+    pairedTransactionId: payload.pairedTransactionId || null,
+    installmentPlanId: payload.installmentPlanId || null,
+    installmentIndex: payload.installmentIndex || null,
+    installmentTotal: payload.installmentTotal || null,
+    createdAt: now,
+    updatedAt: now,
+  }];
+}
+
+function insertTransactions(db, items) {
+  const stmt = db.prepare(`
+    INSERT INTO transactions (
+      id, date, account_id, amount, category, note, is_budgeted, budget_id,
+      transaction_type, transfer_account_id, paired_transaction_id,
+      installment_plan_id, installment_index, installment_total, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  const insertMany = db.transaction((rows) => {
+    rows.forEach((row) => {
+      stmt.run(
+        row.id,
+        row.date,
+        row.accountId,
+        row.amount,
+        row.category,
+        row.note,
+        row.isBudgeted ? 1 : 0,
+        row.budgetId,
+        row.transactionType,
+        row.transferAccountId,
+        row.pairedTransactionId,
+        row.installmentPlanId,
+        row.installmentIndex,
+        row.installmentTotal,
+        row.createdAt,
+        row.updatedAt,
+      );
+    });
+  });
+  insertMany(items);
+}
+
 // GET /api/transactions — 获取交易记录列表，支持筛选
 router.get('/', (req, res) => {
   try {
@@ -64,26 +215,67 @@ router.get('/:id', (req, res) => {
 router.post('/', (req, res) => {
   try {
     const db = getDatabase();
-    const { date, accountId, amount, category, note, isBudgeted, budgetId } = req.body;
+    const {
+      date,
+      accountId,
+      amount,
+      category,
+      note,
+      isBudgeted,
+      budgetId,
+      transactionType = 'normal',
+      repaymentTargetAccountId,
+      installmentCount,
+    } = req.body;
 
     if (!date || !accountId || amount == null || !category) {
       return res.status(400).json({ success: false, message: '缺少必填字段：date, accountId, amount, category' });
     }
+    if (transactionType === 'repayment_out' && !repaymentTargetAccountId) {
+      return res.status(400).json({ success: false, message: '还款交易必须指定还款目标账户' });
+    }
+    if (transactionType === 'installment_bill' && (!installmentCount || Number(installmentCount) < 2)) {
+      return res.status(400).json({ success: false, message: '分期至少需要 2 期' });
+    }
 
-    const id = `txn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const now = new Date().toISOString();
+    let items;
+    if (transactionType === 'repayment_out') {
+      items = buildRepaymentTransactions({
+        date,
+        accountId,
+        amount,
+        note,
+        repaymentTargetAccountId,
+      });
+    } else if (transactionType === 'installment_bill') {
+      items = buildInstallmentTransactions({
+        date,
+        accountId,
+        amount,
+        category,
+        note,
+        isBudgeted,
+        budgetId,
+        installmentCount,
+      });
+    } else {
+      items = buildNormalTransaction({
+        date,
+        accountId,
+        amount,
+        category,
+        note,
+        isBudgeted,
+        budgetId,
+        transactionType,
+      });
+    }
 
-    db.prepare(`
-      INSERT INTO transactions (id, date, account_id, amount, category, note, is_budgeted, budget_id, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      id, date, accountId, Number(amount), category,
-      note || '', isBudgeted ? 1 : 0, isBudgeted && budgetId ? budgetId : null,
-      now, now,
-    );
+    insertTransactions(db, items);
 
-    const created = db.prepare('SELECT * FROM transactions WHERE id = ?').get(id);
-    res.status(201).json({ success: true, data: mapTransaction(created) });
+    const createdRows = items.map((item) => db.prepare('SELECT * FROM transactions WHERE id = ?').get(item.id));
+    const mapped = createdRows.map(mapTransaction);
+    res.status(201).json({ success: true, data: mapped[0], items: mapped });
   } catch (error) {
     console.error('POST /api/transactions error:', error.message);
     res.status(500).json({ success: false, message: '创建交易记录失败', error: error.message });
@@ -100,12 +292,15 @@ router.put('/:id', (req, res) => {
     }
 
     const { date, accountId, amount, category, note, isBudgeted, budgetId } = req.body;
+    if (existing.transaction_type !== 'normal') {
+      return res.status(400).json({ success: false, message: '分期/还款自动生成记录暂不支持直接编辑，请删除后重新创建' });
+    }
     const now = new Date().toISOString();
 
     db.prepare(`
       UPDATE transactions
       SET date = ?, account_id = ?, amount = ?, category = ?, note = ?,
-          is_budgeted = ?, budget_id = ?, updated_at = ?
+          is_budgeted = ?, budget_id = ?, transaction_type = ?, updated_at = ?
       WHERE id = ?
     `).run(
       date ?? existing.date,
@@ -115,6 +310,7 @@ router.put('/:id', (req, res) => {
       note ?? existing.note,
       isBudgeted != null ? (isBudgeted ? 1 : 0) : existing.is_budgeted,
       isBudgeted != null ? (isBudgeted && budgetId ? budgetId : null) : existing.budget_id,
+      'normal',
       now,
       req.params.id,
     );
@@ -136,7 +332,13 @@ router.delete('/:id', (req, res) => {
       return res.status(404).json({ success: false, message: '交易记录不存在' });
     }
 
-    db.prepare('DELETE FROM transactions WHERE id = ?').run(req.params.id);
+    if (existing.paired_transaction_id) {
+      db.prepare('DELETE FROM transactions WHERE paired_transaction_id = ?').run(existing.paired_transaction_id);
+    } else if (existing.installment_plan_id) {
+      db.prepare('DELETE FROM transactions WHERE installment_plan_id = ?').run(existing.installment_plan_id);
+    } else {
+      db.prepare('DELETE FROM transactions WHERE id = ?').run(req.params.id);
+    }
     res.json({ success: true, message: '交易记录已删除' });
   } catch (error) {
     console.error('DELETE /api/transactions/:id error:', error.message);
@@ -154,6 +356,12 @@ function mapTransaction(row) {
     note: row.note || '',
     isBudgeted: row.is_budgeted === 1,
     budgetId: row.budget_id || undefined,
+    transactionType: row.transaction_type || 'normal',
+    transferAccountId: row.transfer_account_id || undefined,
+    pairedTransactionId: row.paired_transaction_id || undefined,
+    installmentPlanId: row.installment_plan_id || undefined,
+    installmentIndex: row.installment_index || undefined,
+    installmentTotal: row.installment_total || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
