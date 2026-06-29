@@ -60,6 +60,11 @@ function migrateTransactionsTable() {
   ensureColumn('transactions', 'installment_plan_id', 'TEXT');
   ensureColumn('transactions', 'installment_index', 'INTEGER');
   ensureColumn('transactions', 'installment_total', 'INTEGER');
+  ensureColumn('transactions', 'installment_fee', 'REAL');
+}
+
+function migrateAccountsTable() {
+  ensureColumn('accounts', 'repayment_day', 'INTEGER');
 }
 
 /**
@@ -111,6 +116,7 @@ function initDatabase(dbPathOrDir, allowRecovery = true) {
         name        TEXT NOT NULL,
         type        TEXT NOT NULL CHECK(type IN ('alipay_huabei','alipay_balance','wechat_balance','credit_card','debit_card')),
         billing_day INTEGER,
+        repayment_day INTEGER,
         note        TEXT DEFAULT '',
         created_at  TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
@@ -144,6 +150,7 @@ function initDatabase(dbPathOrDir, allowRecovery = true) {
         installment_plan_id TEXT,
         installment_index INTEGER,
         installment_total INTEGER,
+        installment_fee REAL,
         created_at  TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
         FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE RESTRICT,
@@ -151,6 +158,7 @@ function initDatabase(dbPathOrDir, allowRecovery = true) {
       );
     `);
 
+    migrateAccountsTable();
     migrateBudgetsTableIfNeeded();
     migrateTransactionsTable();
 
@@ -263,6 +271,16 @@ function getDatabase() {
   return db;
 }
 
+function checkpointDatabase() {
+  if (!db) return;
+  try {
+    db.pragma('wal_checkpoint(FULL)');
+  } catch {}
+  try {
+    db.pragma('wal_checkpoint(TRUNCATE)');
+  } catch {}
+}
+
 /**
  * 关闭数据库连接
  */
@@ -273,4 +291,4 @@ function closeDatabase() {
   }
 }
 
-module.exports = { initDatabase, getDatabase, closeDatabase, getDbPath };
+module.exports = { initDatabase, getDatabase, closeDatabase, checkpointDatabase, getDbPath };

@@ -154,6 +154,64 @@ export function listBudgetSettlementsForMonth(
   return results.sort((a, b) => a.cycleEnd.localeCompare(b.cycleEnd));
 }
 
+export function listBudgetSettlementsForRange(
+  budgets: IBudget[],
+  transactions: ITransaction[],
+  rangeFrom: string,
+  rangeTo: string,
+): BudgetSettlementItem[] {
+  const fromDate = parseISODate(rangeFrom);
+  const toDate = parseISODate(rangeTo);
+  const toISO = formatISODate(toDate);
+  const results: BudgetSettlementItem[] = [];
+
+  budgets.forEach((budget) => {
+    if (budget.cycleType === 'once') {
+      if (!budget.endDate) return;
+      if (budget.endDate < rangeFrom || budget.endDate > rangeTo) return;
+      const window = { start: budget.startDate, end: budget.endDate };
+      const used = getBudgetUsedInWindow(budget, transactions, window);
+      results.push({
+        budgetId: budget.id,
+        budgetName: budget.name,
+        cycleStart: window.start,
+        cycleEnd: window.end,
+        budgetAmount: budget.amount,
+        used,
+        expectedAmount: Math.max(0, budget.amount - used),
+      });
+      return;
+    }
+
+    let cursor = parseISODate(budget.startDate);
+    if (cursor < fromDate) {
+      const seed = getBudgetCycleWindow(budget, fromDate);
+      if (!seed) return;
+      cursor = parseISODate(seed.start);
+    }
+
+    while (formatISODate(cursor) <= toISO) {
+      const currentWindow = getBudgetCycleWindow(budget, cursor);
+      if (!currentWindow) break;
+      if (currentWindow.end >= rangeFrom && currentWindow.end <= rangeTo) {
+        const used = getBudgetUsedInWindow(budget, transactions, currentWindow);
+        results.push({
+          budgetId: budget.id,
+          budgetName: budget.name,
+          cycleStart: currentWindow.start,
+          cycleEnd: currentWindow.end,
+          budgetAmount: budget.amount,
+          used,
+          expectedAmount: Math.max(0, budget.amount - used),
+        });
+      }
+      cursor = addDays(parseISODate(currentWindow.end), 1);
+    }
+  });
+
+  return results.sort((a, b) => a.cycleEnd.localeCompare(b.cycleEnd));
+}
+
 export function isFutureTransaction(transaction: ITransaction, refDate = new Date()): boolean {
   return transaction.date > formatISODate(refDate);
 }

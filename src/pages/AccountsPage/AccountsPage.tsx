@@ -63,6 +63,7 @@ interface AccountFormData {
   name: string;
   type: AccountType;
   billingDay: string;
+  repaymentDay: string;
   note: string;
 }
 
@@ -70,6 +71,7 @@ const EMPTY_FORM: AccountFormData = {
   name: '',
   type: 'alipay_huabei',
   billingDay: '',
+  repaymentDay: '',
   note: '',
 };
 
@@ -108,6 +110,7 @@ export default function AccountsPage() {
       name: account.name,
       type: account.type,
       billingDay: account.billingDay != null ? String(account.billingDay) : '',
+      repaymentDay: account.repaymentDay != null ? String(account.repaymentDay) : '',
       note: account.note,
     });
     setDialogOpen(true);
@@ -124,6 +127,10 @@ export default function AccountsPage() {
       toast.error('请设置账单日');
       return;
     }
+    if (needsBillingDay(form.type) && form.repaymentDay && (Number(form.repaymentDay) < 1 || Number(form.repaymentDay) > 28)) {
+      toast.error('还款日必须在 1-28 之间');
+      return;
+    }
 
     setSubmitting(true);
     try {
@@ -132,6 +139,7 @@ export default function AccountsPage() {
           name: form.name.trim(),
           type: form.type,
           billingDay: needsBillingDay(form.type) && form.billingDay ? Number(form.billingDay) : undefined,
+          repaymentDay: needsBillingDay(form.type) && form.repaymentDay ? Number(form.repaymentDay) : undefined,
           note: form.note.trim(),
         });
         if (!updated) {
@@ -144,6 +152,7 @@ export default function AccountsPage() {
           name: form.name.trim(),
           type: form.type,
           billingDay: needsBillingDay(form.type) && form.billingDay ? Number(form.billingDay) : undefined,
+          repaymentDay: needsBillingDay(form.type) && form.repaymentDay ? Number(form.repaymentDay) : undefined,
           note: form.note.trim(),
         });
         if (!created) {
@@ -260,6 +269,14 @@ export default function AccountsPage() {
                       </span>
                     </div>
                   )}
+                  {account.repaymentDay != null && (
+                    <div className="flex items-center gap-2 text-sm">
+                      <span className="text-muted-foreground">还款日</span>
+                      <span className="font-medium text-foreground tabular-nums">
+                        每月 {account.repaymentDay} 日
+                      </span>
+                    </div>
+                  )}
                   {account.note && (
                     <p className="text-xs text-muted-foreground line-clamp-2">{account.note}</p>
                   )}
@@ -302,6 +319,7 @@ export default function AccountsPage() {
                       ...prev,
                       type: v as AccountType,
                       billingDay: needsBillingDay(v as AccountType) ? prev.billingDay : '',
+                      repaymentDay: needsBillingDay(v as AccountType) ? prev.repaymentDay : '',
                     }))
                   }
                 >
@@ -336,6 +354,29 @@ export default function AccountsPage() {
                       <SelectValue placeholder="选择账单日" />
                     </SelectTrigger>
                     <SelectContent>
+                      {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
+                        <SelectItem key={d} value={String(d)}>
+                          每月 {d} 日
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
+              {/* 还款日 — 仅信用卡/花呗显示 */}
+              {needsBillingDay(form.type) && (
+                <div className="space-y-2">
+                  <Label htmlFor="acc-repayment">还款日（可选）</Label>
+                  <Select
+                    value={form.repaymentDay}
+                    onValueChange={(v) => setForm((prev) => ({ ...prev, repaymentDay: v }))}
+                  >
+                    <SelectTrigger id="acc-repayment">
+                      <SelectValue placeholder="选择还款日" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="">未设置</SelectItem>
                       {Array.from({ length: 28 }, (_, i) => i + 1).map((d) => (
                         <SelectItem key={d} value={String(d)}>
                           每月 {d} 日

@@ -308,6 +308,7 @@ ipcMain.handle('open-data-directory', () => {
 });
 
 ipcMain.handle('export-database', async () => {
+  await ensureServerStarted();
   const dbPath = getDatabasePath();
   const result = await dialog.showSaveDialog(mainWindow, {
     title: '导出数据库',
@@ -326,7 +327,24 @@ ipcMain.handle('export-database', async () => {
     return { success: false, error: '数据库文件不存在' };
   }
 
+  try {
+    const { checkpointDatabase } = require(path.join(__dirname, '..', 'server', 'db.cjs'));
+    checkpointDatabase();
+  } catch {}
+
+  stopServer();
+  try {
+    const Database = require('better-sqlite3');
+    const db = new Database(dbPath);
+    try {
+      db.pragma('wal_checkpoint(TRUNCATE)');
+    } catch {}
+    try {
+      db.close();
+    } catch {}
+  } catch {}
   copyDatabaseFile(dbPath, result.filePath);
+  void ensureServerStarted();
   return { success: true, path: result.filePath };
 });
 

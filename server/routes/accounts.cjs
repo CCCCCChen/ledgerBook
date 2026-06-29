@@ -34,7 +34,7 @@ router.get('/:id', (req, res) => {
 router.post('/', (req, res) => {
   try {
     const db = getDatabase();
-    const { name, type, billingDay, note } = req.body;
+    const { name, type, billingDay, repaymentDay, note } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({ success: false, error: '账户名称不能为空' });
@@ -53,14 +53,27 @@ router.post('/', (req, res) => {
     if (needsBilling && (billingDayNum == null || billingDayNum < 1 || billingDayNum > 28)) {
       return res.status(400).json({ success: false, error: '账单日必须在 1-28 之间' });
     }
+    const repaymentDayNum = repaymentDay != null ? Number(repaymentDay) : null;
+    if (needsBilling && repaymentDay != null && (repaymentDayNum == null || repaymentDayNum < 1 || repaymentDayNum > 28)) {
+      return res.status(400).json({ success: false, error: '还款日必须在 1-28 之间' });
+    }
 
     const id = `acc-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const now = new Date().toISOString();
 
     db.prepare(`
-      INSERT INTO accounts (id, name, type, billing_day, note, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, name.trim(), type, needsBilling ? billingDayNum : null, (note || '').trim(), now, now);
+      INSERT INTO accounts (id, name, type, billing_day, repayment_day, note, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      id,
+      name.trim(),
+      type,
+      needsBilling ? billingDayNum : null,
+      needsBilling ? repaymentDayNum : null,
+      (note || '').trim(),
+      now,
+      now,
+    );
 
     const row = db.prepare('SELECT * FROM accounts WHERE id = ?').get(id);
     res.status(201).json({ success: true, data: mapAccount(row) });
@@ -79,7 +92,7 @@ router.put('/:id', (req, res) => {
       return res.status(404).json({ success: false, error: '账户不存在' });
     }
 
-    const { name, type, billingDay, note } = req.body;
+    const { name, type, billingDay, repaymentDay, note } = req.body;
     const newName = name != null ? name.trim() : existing.name;
     const newType = type != null ? type : existing.type;
     const newNote = note != null ? note.trim() : existing.note;
@@ -105,11 +118,21 @@ router.put('/:id', (req, res) => {
       return res.status(400).json({ success: false, error: '账单日必须在 1-28 之间' });
     }
 
+    let newRepaymentDay = null;
+    if (repaymentDay != null) {
+      newRepaymentDay = Number(repaymentDay);
+    } else if (needsBilling) {
+      newRepaymentDay = existing.repayment_day;
+    }
+    if (needsBilling && newRepaymentDay != null && (newRepaymentDay < 1 || newRepaymentDay > 28)) {
+      return res.status(400).json({ success: false, error: '还款日必须在 1-28 之间' });
+    }
+
     const now = new Date().toISOString();
     db.prepare(`
-      UPDATE accounts SET name = ?, type = ?, billing_day = ?, note = ?, updated_at = ?
+      UPDATE accounts SET name = ?, type = ?, billing_day = ?, repayment_day = ?, note = ?, updated_at = ?
       WHERE id = ?
-    `).run(newName, newType, needsBilling ? newBillingDay : null, newNote, now, req.params.id);
+    `).run(newName, newType, needsBilling ? newBillingDay : null, needsBilling ? newRepaymentDay : null, newNote, now, req.params.id);
 
     const row = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
     res.json({ success: true, data: mapAccount(row) });
@@ -144,6 +167,7 @@ function mapAccount(row) {
     name: row.name,
     type: row.type,
     billingDay: row.billing_day,
+    repaymentDay: row.repayment_day,
     note: row.note || '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,

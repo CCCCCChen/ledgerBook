@@ -64,6 +64,8 @@ interface TransactionFormData {
   amount: string;
   isExpense: boolean;
   installmentCount: string;
+  editScope: 'single' | 'plan';
+  feeTotal: string;
   category: TransactionCategory;
   note: string;
   isBudgeted: boolean;
@@ -78,6 +80,8 @@ const EMPTY_FORM: TransactionFormData = {
   amount: '',
   isExpense: true,
   installmentCount: '3',
+  editScope: 'single',
+  feeTotal: '0',
   category: '餐饮',
   note: '',
   isBudgeted: false,
@@ -100,6 +104,7 @@ export default function TransactionsPage() {
   // Dialog state
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [editingMeta, setEditingMeta] = useState<{ transactionType?: TransactionType; installmentPlanId?: string } | null>(null);
   const [form, setForm] = useState<TransactionFormData>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
 
@@ -195,26 +200,30 @@ export default function TransactionsPage() {
   // Form handlers
   const openAddDialog = () => {
     setEditingId(null);
+    setEditingMeta(null);
     setForm({ ...EMPTY_FORM, date: new Date().toISOString().slice(0, 10) });
     setDialogOpen(true);
   };
 
   const openEditDialog = (txn: ITransaction) => {
-    if (txn.transactionType && txn.transactionType !== 'normal') {
-      toast.info('自动生成的分期/还款记录暂不支持直接编辑，请删除后重建');
+    if (txn.transactionType === 'repayment_out' || txn.transactionType === 'repayment_in') {
+      toast.info('还款联动记录暂不支持编辑，请删除后重建');
       return;
     }
     setEditingId(txn.id);
+    setEditingMeta({ transactionType: txn.transactionType || 'normal', installmentPlanId: txn.installmentPlanId });
     setForm({
       date: txn.date,
-      transactionType: 'normal',
+      transactionType: txn.transactionType === 'installment_bill' ? 'installment_bill' : 'normal',
       accountId: txn.accountId,
       repaymentTargetAccountId: txn.transferAccountId || '',
       amount: String(Math.abs(txn.amount)),
       isExpense: txn.amount < 0,
       installmentCount: txn.installmentTotal ? String(txn.installmentTotal) : '3',
+      editScope: txn.transactionType === 'installment_bill' ? 'plan' : 'single',
+      feeTotal: '0',
       category: txn.category,
-      note: txn.note,
+      note: txn.note.replace(/（第\s*\d+\/\d+\s*期）$/, ''),
       isBudgeted: txn.isBudgeted,
       budgetId: txn.budgetId || '',
     });
@@ -259,6 +268,7 @@ export default function TransactionsPage() {
           note: form.note,
           isBudgeted: form.isBudgeted,
           budgetId: form.isBudgeted ? form.budgetId : undefined,
+          editScope: editingMeta?.transactionType === 'installment_bill' ? form.editScope : undefined,
         });
         if (!updated) {
           toast.error('交易记录更新失败');
@@ -278,6 +288,7 @@ export default function TransactionsPage() {
           transferAccountId: form.transactionType === 'repayment_out' ? form.repaymentTargetAccountId : undefined,
           repaymentTargetAccountId: form.transactionType === 'repayment_out' ? form.repaymentTargetAccountId : undefined,
           installmentCount: form.transactionType === 'installment_bill' ? Number(form.installmentCount) : undefined,
+          feeTotal: form.transactionType === 'installment_bill' ? Number(form.feeTotal || '0') : undefined,
         });
         if (!created) {
           toast.error('交易记录创建失败');
@@ -680,6 +691,11 @@ export default function TransactionsPage() {
                               分期：第 {txn.installmentIndex}/{txn.installmentTotal} 期
                             </span>
                           )}
+                          {txn.installmentFee != null && txn.installmentFee > 0 && (
+                            <span className="block truncate text-xs text-muted-foreground">
+                              含手续费：¥{txn.installmentFee.toLocaleString()}
+                            </span>
+                          )}
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
                           {txn.isBudgeted && txn.budgetId ? (
@@ -698,7 +714,7 @@ export default function TransactionsPage() {
                               className="h-8 w-8"
                               onClick={() => openEditDialog(txn)}
                               aria-label="编辑"
-                              disabled={txn.transactionType !== 'normal' && txn.transactionType !== undefined}
+                              disabled={txn.transactionType === 'repayment_out' || txn.transactionType === 'repayment_in'}
                             >
                               <Pencil className="size-3.5" />
                             </Button>
@@ -761,6 +777,7 @@ export default function TransactionsPage() {
                       installmentCount: value === 'installment_bill' ? prev.installmentCount || '3' : prev.installmentCount,
                     }))
                   }
+                  disabled={!!editingId}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="交易类型" />
@@ -773,11 +790,30 @@ export default function TransactionsPage() {
                 </Select>
               </div>
 
+              {editingMeta?.transactionType === 'installment_bill' && (
+                <div className="grid gap-1.5">
+                  <Label>修改范围</Label>
+                  <Select
+                    value={form.editScope}
+                    onValueChange={(v) => setForm((prev) => ({ ...prev, editScope: v as TransactionFormData['editScope'] }))}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="plan">整组分期</SelectItem>
+                      <SelectItem value="single">仅本期</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+
               <div className="grid gap-1.5">
                 <Label>{form.transactionType === 'repayment_out' ? '扣款账户（储蓄卡）' : '账户'}</Label>
                 <Select
                   value={form.accountId}
                   onValueChange={(v) => setForm({ ...form, accountId: v })}
+                  disabled={editingMeta?.transactionType === 'installment_bill'}
                 >
                   <SelectTrigger>
                     <SelectValue placeholder="选择账户" />
@@ -857,6 +893,22 @@ export default function TransactionsPage() {
                     value={form.installmentCount}
                     onChange={(e) => setForm({ ...form, installmentCount: e.target.value })}
                     placeholder="如：3 / 6 / 12"
+                    disabled={!!editingId}
+                  />
+                </div>
+              )}
+
+              {form.transactionType === 'installment_bill' && !editingId && (
+                <div className="grid gap-1.5">
+                  <Label htmlFor="txn-fee-total">分期手续费（总额，可选）</Label>
+                  <Input
+                    id="txn-fee-total"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={form.feeTotal}
+                    onChange={(e) => setForm({ ...form, feeTotal: e.target.value })}
+                    placeholder="0.00"
                   />
                 </div>
               )}
@@ -937,6 +989,7 @@ export default function TransactionsPage() {
                 onClick={() => {
                   setDialogOpen(false);
                   setEditingId(null);
+                  setEditingMeta(null);
                   setForm(EMPTY_FORM);
                 }}
               >

@@ -2,6 +2,7 @@ import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ReactECharts from 'echarts-for-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
@@ -13,7 +14,7 @@ import { CHART_COLORS } from '@/lib/chart-colors';
 import { ACCOUNT_TYPE_LABELS } from '@/data/finance';
 import type { ITransaction, IBudget, IAccount } from '@/types/finance';
 import { loadAccounts, loadBudgets, loadTransactions } from '@/lib/data-service';
-import { getBudgetCycleWindow, getBudgetUsedInWindow, listBudgetSettlementsForMonth } from '@/lib/finance-utils';
+import { listBudgetSettlementsForRange } from '@/lib/finance-utils';
 
 type TimeGranularity = 'daily' | 'weekly' | 'monthly';
 
@@ -54,7 +55,10 @@ export default function StatisticsPage() {
   const [includeBudgetSettlement, setIncludeBudgetSettlement] = useState(true);
   const today = new Date();
   const todayISO = today.toISOString().slice(0, 10);
+  const monthStartISO = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().slice(0, 10);
   const monthEndISO = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().slice(0, 10);
+  const [rangeFrom, setRangeFrom] = useState(monthStartISO);
+  const [rangeTo, setRangeTo] = useState(monthEndISO);
 
   useEffect(() => {
     (async () => {
@@ -69,9 +73,16 @@ export default function StatisticsPage() {
     })().catch(() => {});
   }, []);
 
+  const filteredTransactions = useMemo(
+    () => transactions.filter((transaction) => transaction.date >= rangeFrom && transaction.date <= rangeTo),
+    [transactions, rangeFrom, rangeTo],
+  );
+
+  const actualCutoff = useMemo(() => (todayISO < rangeTo ? todayISO : rangeTo), [todayISO, rangeTo]);
+
   const actualTransactions = useMemo(
-    () => transactions.filter((transaction) => transaction.date <= todayISO),
-    [transactions, todayISO],
+    () => filteredTransactions.filter((transaction) => transaction.date <= actualCutoff),
+    [filteredTransactions, actualCutoff],
   );
 
   const actualExpenses = useMemo(
@@ -79,17 +90,20 @@ export default function StatisticsPage() {
     [actualTransactions],
   );
 
-  const futureExpenseTransactions = useMemo(
-    () =>
-      transactions
-        .filter((transaction) => transaction.amount < 0 && transaction.date > todayISO && transaction.date <= monthEndISO)
-        .map((transaction) => ({ ...transaction, amount: Math.abs(transaction.amount) })),
-    [transactions, todayISO, monthEndISO],
-  );
+  const futureFrom = useMemo(() => (todayISO > rangeFrom ? todayISO : rangeFrom), [todayISO, rangeFrom]);
+  const futureExpenseTransactions = useMemo(() => {
+    if (rangeTo < futureFrom) return [];
+    return filteredTransactions
+      .filter((transaction) => transaction.amount < 0 && transaction.date > actualCutoff && transaction.date >= futureFrom)
+      .map((transaction) => ({ ...transaction, amount: Math.abs(transaction.amount) }));
+  }, [filteredTransactions, actualCutoff, futureFrom, rangeTo]);
 
   const budgetSettlementItems = useMemo(
-    () => listBudgetSettlementsForMonth(budgets, transactions, today).filter((item) => item.expectedAmount > 0),
-    [budgets, transactions, today],
+    () =>
+      listBudgetSettlementsForRange(budgets, transactions, rangeFrom, rangeTo)
+        .filter((item) => item.expectedAmount > 0)
+        .filter((item) => item.cycleEnd >= futureFrom),
+    [budgets, transactions, rangeFrom, rangeTo, futureFrom],
   );
 
   const futureExpenseItems = useMemo(() => {
@@ -116,16 +130,18 @@ export default function StatisticsPage() {
 
   // ---- 超支预警 ----
   const overBudgetAlerts = useMemo(() => {
+    const rangeExpenses = filteredTransactions
+      .filter((transaction) => transaction.amount < 0)
+      .map((transaction) => ({ ...transaction, amount: Math.abs(transaction.amount) }));
     return budgets
       .map((b) => {
-        const window = getBudgetCycleWindow(b, today);
-        const used = getBudgetUsedInWindow(b, transactions, window);
+        const used = rangeExpenses.filter((t) => t.budgetId === b.id).reduce((sum, t) => sum + t.amount, 0);
         const rate = b.amount > 0 ? used / b.amount : 0;
         return { ...b, used, rate };
       })
       .filter((b) => b.rate > 0.8)
       .sort((a, b) => b.rate - a.rate);
-  }, [budgets, transactions, today]);
+  }, [budgets, filteredTransactions]);
 
   // ---- 账单周期统计 ----
   const billingCycleOption = useMemo(() => {
@@ -171,10 +187,12 @@ export default function StatisticsPage() {
     if (budgets.length === 0) return null;
     const names = budgets.map((b) => b.name);
     const budgetAmounts = budgets.map((b) => b.amount);
-    const usedAmounts = budgets.map((budget) => {
-      const window = getBudgetCycleWindow(budget, today);
-      return getBudgetUsedInWindow(budget, transactions, window);
-    });
+    const rangeExpenses = filteredTransactions
+      .filter((transaction) => transaction.amount < 0)
+      .map((transaction) => ({ ...transaction, amount: Math.abs(transaction.amount) }));
+    const usedAmounts = budgets.map((budget) =>
+      rangeExpenses.filter((t) => t.budgetId === budget.id).reduce((sum, t) => sum + t.amount, 0),
+    );
 
     return {
       tooltip: { trigger: 'axis' },
@@ -203,7 +221,7 @@ export default function StatisticsPage() {
         },
       ],
     };
-  }, [budgets, transactions, today]);
+  }, [budgets, filteredTransactions]);
 
   // ---- 分类支出分布 ----
   const categoryPieOption = useMemo(() => {
@@ -336,6 +354,25 @@ export default function StatisticsPage() {
           <h1 className="text-2xl font-bold text-foreground">统计分析</h1>
           <p className="text-sm text-muted-foreground mt-1">多维度消费数据分析与预算追踪</p>
         </div>
+
+        <Card>
+          <CardContent className="pt-6 flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+            <div className="space-y-1">
+              <p className="font-medium">时间范围</p>
+              <p className="text-sm text-muted-foreground">统计与预算对比会按该范围计算</p>
+            </div>
+            <div className="flex flex-wrap items-end gap-3">
+              <div className="grid gap-1.5">
+                <Label htmlFor="stats-from">开始</Label>
+                <Input id="stats-from" type="date" value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="stats-to">结束</Label>
+                <Input id="stats-to" type="date" value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} />
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         {/* 概览卡片 */}
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">

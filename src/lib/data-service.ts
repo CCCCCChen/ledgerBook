@@ -10,6 +10,7 @@ import {
   type TransactionFilters,
   type BudgetWithStats,
   type CreateTransactionInput,
+  type UpdateTransactionInput,
 } from '@/api/index';
 import type { ITransaction, IBudget, IAccount } from '@/types/finance';
 import { MOCK_ACCOUNTS, MOCK_BUDGETS, MOCK_TRANSACTIONS } from '@/data/finance';
@@ -99,6 +100,8 @@ export async function createAccount(data: Partial<IAccount>): Promise<IAccount |
     id,
     name: data.name || '',
     type: data.type || 'debit_card',
+    billingDay: data.billingDay,
+    repaymentDay: data.repaymentDay,
     note: data.note || '',
     createdAt: now,
     updatedAt: now,
@@ -214,12 +217,18 @@ export async function createTransaction(data: CreateTransactionInput): Promise<I
     const now = new Date().toISOString();
     const planId = `inst-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const totalAmount = Math.abs(Number(data.amount || 0));
-    const base = Math.round((totalAmount / installmentCount) * 100) / 100;
+    const feeTotal = data.feeTotal != null ? Math.abs(Number(data.feeTotal)) : 0;
+    const totalWithFee = totalAmount + feeTotal;
+    const base = Math.round((totalWithFee / installmentCount) * 100) / 100;
+    const feeBase = feeTotal > 0 ? Math.round((feeTotal / installmentCount) * 100) / 100 : 0;
     let allocated = 0;
+    let feeAllocated = 0;
     for (let index = 0; index < installmentCount; index += 1) {
       const isLast = index === installmentCount - 1;
-      const amount = isLast ? Math.round((totalAmount - allocated) * 100) / 100 : base;
+      const amount = isLast ? Math.round((totalWithFee - allocated) * 100) / 100 : base;
       allocated += amount;
+      const fee = feeTotal > 0 ? (isLast ? Math.round((feeTotal - feeAllocated) * 100) / 100 : feeBase) : 0;
+      feeAllocated += fee;
       const date = new Date(`${data.date || now.slice(0, 10)}T00:00:00`);
       date.setMonth(date.getMonth() + index);
       txns.push({
@@ -235,6 +244,7 @@ export async function createTransaction(data: CreateTransactionInput): Promise<I
         installmentPlanId: planId,
         installmentIndex: index + 1,
         installmentTotal: installmentCount,
+        installmentFee: feeTotal > 0 ? fee : undefined,
         createdAt: now,
         updatedAt: now,
       });
@@ -269,7 +279,7 @@ export async function createTransaction(data: CreateTransactionInput): Promise<I
   return newTxn;
 }
 
-export async function updateTransaction(id: string, data: Partial<ITransaction>): Promise<ITransaction | null> {
+export async function updateTransaction(id: string, data: UpdateTransactionInput): Promise<ITransaction | null> {
   if (isElectron()) {
     try {
       const res = await transactionsApi.update(id, data);
@@ -281,6 +291,51 @@ export async function updateTransaction(id: string, data: Partial<ITransaction>)
   const txns = lsLoadTransactions();
   const idx = txns.findIndex((t) => t.id === id);
   if (idx === -1) return null;
+  if (txns[idx].transactionType && txns[idx].transactionType !== 'normal' && txns[idx].transactionType !== 'installment_bill') {
+    return null;
+  }
+  if (txns[idx].transactionType === 'installment_bill') {
+    const scope = data.editScope || 'single';
+    const baseNote = (data.note != null ? String(data.note) : txns[idx].note).replace(/（第\s*\d+\/\d+\s*期）$/, '').trim();
+    const planId = txns[idx].installmentPlanId;
+    const amount = data.amount != null ? Number(data.amount) : txns[idx].amount;
+    const category = (data.category ?? txns[idx].category) as ITransaction['category'];
+    const isBudgeted = data.isBudgeted != null ? Boolean(data.isBudgeted) : txns[idx].isBudgeted;
+    const budgetId = isBudgeted ? (data.budgetId ?? txns[idx].budgetId) : undefined;
+    const now = new Date().toISOString();
+    if (scope === 'plan' && planId) {
+      txns.forEach((transaction) => {
+        if (transaction.installmentPlanId !== planId) return;
+        const suffix =
+          transaction.installmentIndex && transaction.installmentTotal
+            ? `（第 ${transaction.installmentIndex}/${transaction.installmentTotal} 期）`
+            : '';
+        transaction.amount = amount;
+        transaction.category = category;
+        transaction.note = suffix ? `${baseNote || '分期账单'}${suffix}` : baseNote || '分期账单';
+        transaction.isBudgeted = isBudgeted;
+        transaction.budgetId = budgetId;
+        transaction.updatedAt = now;
+      });
+    } else {
+      const suffix =
+        txns[idx].installmentIndex && txns[idx].installmentTotal
+          ? `（第 ${txns[idx].installmentIndex}/${txns[idx].installmentTotal} 期）`
+          : '';
+      txns[idx] = {
+        ...txns[idx],
+        date: data.date ?? txns[idx].date,
+        amount,
+        category,
+        note: suffix ? `${baseNote || '分期账单'}${suffix}` : baseNote || '分期账单',
+        isBudgeted,
+        budgetId,
+        updatedAt: now,
+      };
+    }
+    lsSaveTransactions(txns);
+    return txns[idx];
+  }
   txns[idx] = { ...txns[idx], ...data, updatedAt: new Date().toISOString() };
   lsSaveTransactions(txns);
   return txns[idx];

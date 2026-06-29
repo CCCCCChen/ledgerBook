@@ -7,6 +7,12 @@ import type { ITransaction, IBudget, IAccount } from '@/types/finance';
 export interface CreateTransactionInput extends Partial<ITransaction> {
   repaymentTargetAccountId?: string;
   installmentCount?: number;
+  feeTotal?: number;
+}
+
+export interface UpdateTransactionInput extends Partial<ITransaction> {
+  editScope?: 'single' | 'plan';
+  feeTotal?: number;
 }
 
 // ============================================================
@@ -46,7 +52,7 @@ export const transactionsApi = {
   },
   get: (id: string) => api.get<{ success: boolean; data: ITransaction }>(`/api/transactions/${id}`),
   create: (data: CreateTransactionInput) => api.post<{ success: boolean; data: ITransaction; items?: ITransaction[] }>('/api/transactions', data),
-  update: (id: string, data: Partial<ITransaction>) => api.put<{ success: boolean; data: ITransaction }>(`/api/transactions/${id}`, data),
+  update: (id: string, data: UpdateTransactionInput) => api.put<{ success: boolean; data: ITransaction }>(`/api/transactions/${id}`, data),
   remove: (id: string) => api.delete<{ success: boolean }>(`/api/transactions/${id}`),
 };
 

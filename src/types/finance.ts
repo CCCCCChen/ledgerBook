@@ -28,6 +28,7 @@ export interface ITransaction {
   installmentPlanId?: string;
   installmentIndex?: number;
   installmentTotal?: number;
+  installmentFee?: number;
   createdAt: string;
   updatedAt: string;
 }
@@ -50,6 +51,7 @@ export interface IAccount {
   name: string;
   type: AccountType;
   billingDay?: number;
+  repaymentDay?: number;
   note: string;
   createdAt: string;
   updatedAt: string;

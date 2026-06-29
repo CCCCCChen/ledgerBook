@@ -38,6 +38,7 @@ function buildRepaymentTransactions(payload) {
       installmentPlanId: null,
       installmentIndex: null,
       installmentTotal: null,
+      installmentFee: null,
       createdAt: now,
       updatedAt: now,
     },
@@ -56,6 +57,7 @@ function buildRepaymentTransactions(payload) {
       installmentPlanId: null,
       installmentIndex: null,
       installmentTotal: null,
+      installmentFee: null,
       createdAt: now,
       updatedAt: now,
     },
@@ -67,14 +69,20 @@ function buildInstallmentTransactions(payload) {
   const now = new Date().toISOString();
   const planId = createId('inst');
   const totalAmount = Math.abs(Number(payload.amount));
-  const base = Math.round((totalAmount / installmentCount) * 100) / 100;
+  const feeTotal = payload.feeTotal != null ? Math.abs(Number(payload.feeTotal)) : 0;
+  const totalWithFee = totalAmount + feeTotal;
+  const base = Math.round((totalWithFee / installmentCount) * 100) / 100;
+  const feeBase = feeTotal > 0 ? Math.round((feeTotal / installmentCount) * 100) / 100 : 0;
   const items = [];
   let allocated = 0;
+  let feeAllocated = 0;
 
   for (let index = 0; index < installmentCount; index += 1) {
     const isLast = index === installmentCount - 1;
-    const amount = isLast ? Math.round((totalAmount - allocated) * 100) / 100 : base;
+    const amount = isLast ? Math.round((totalWithFee - allocated) * 100) / 100 : base;
     allocated += amount;
+    const fee = feeTotal > 0 ? (isLast ? Math.round((feeTotal - feeAllocated) * 100) / 100 : feeBase) : 0;
+    feeAllocated += fee;
     items.push({
       id: createId('txn'),
       date: addMonths(payload.date, index),
@@ -90,6 +98,7 @@ function buildInstallmentTransactions(payload) {
       installmentPlanId: planId,
       installmentIndex: index + 1,
       installmentTotal: installmentCount,
+      installmentFee: feeTotal > 0 ? fee : null,
       createdAt: now,
       updatedAt: now,
     });
@@ -115,6 +124,7 @@ function buildNormalTransaction(payload) {
     installmentPlanId: payload.installmentPlanId || null,
     installmentIndex: payload.installmentIndex || null,
     installmentTotal: payload.installmentTotal || null,
+    installmentFee: payload.installmentFee || null,
     createdAt: now,
     updatedAt: now,
   }];
@@ -125,8 +135,8 @@ function insertTransactions(db, items) {
     INSERT INTO transactions (
       id, date, account_id, amount, category, note, is_budgeted, budget_id,
       transaction_type, transfer_account_id, paired_transaction_id,
-      installment_plan_id, installment_index, installment_total, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      installment_plan_id, installment_index, installment_total, installment_fee, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertMany = db.transaction((rows) => {
     rows.forEach((row) => {
@@ -145,6 +155,7 @@ function insertTransactions(db, items) {
         row.installmentPlanId,
         row.installmentIndex,
         row.installmentTotal,
+        row.installmentFee,
         row.createdAt,
         row.updatedAt,
       );
@@ -226,6 +237,7 @@ router.post('/', (req, res) => {
       transactionType = 'normal',
       repaymentTargetAccountId,
       installmentCount,
+      feeTotal,
     } = req.body;
 
     if (!date || !accountId || amount == null || !category) {
@@ -257,6 +269,7 @@ router.post('/', (req, res) => {
         isBudgeted,
         budgetId,
         installmentCount,
+        feeTotal,
       });
     } else {
       items = buildNormalTransaction({
@@ -291,11 +304,67 @@ router.put('/:id', (req, res) => {
       return res.status(404).json({ success: false, message: '交易记录不存在' });
     }
 
-    const { date, accountId, amount, category, note, isBudgeted, budgetId } = req.body;
-    if (existing.transaction_type !== 'normal') {
-      return res.status(400).json({ success: false, message: '分期/还款自动生成记录暂不支持直接编辑，请删除后重新创建' });
-    }
     const now = new Date().toISOString();
+    const { date, accountId, amount, category, note, isBudgeted, budgetId, editScope = 'single' } = req.body;
+
+    if (existing.transaction_type === 'repayment_out' || existing.transaction_type === 'repayment_in') {
+      return res.status(400).json({ success: false, message: '还款联动记录暂不支持编辑，请删除后重新创建' });
+    }
+
+    if (existing.transaction_type === 'installment_bill') {
+      const nextAmount = amount != null ? Number(amount) : existing.amount;
+      const nextCategory = category ?? existing.category;
+      const nextIsBudgeted = isBudgeted != null ? (isBudgeted ? 1 : 0) : existing.is_budgeted;
+      const nextBudgetId = isBudgeted != null ? (isBudgeted && budgetId ? budgetId : null) : existing.budget_id;
+
+      const baseNote = (note != null ? String(note) : existing.note || '').replace(/（第\s*\d+\/\d+\s*期）$/, '').trim();
+      const applyToPlan = editScope === 'plan' && existing.installment_plan_id;
+
+      if (applyToPlan) {
+        const rows = db.prepare(
+          'SELECT id, installment_index AS installmentIndex, installment_total AS installmentTotal FROM transactions WHERE installment_plan_id = ? ORDER BY installment_index ASC',
+        ).all(existing.installment_plan_id);
+
+        const updateStmt = db.prepare(`
+          UPDATE transactions
+          SET amount = ?, category = ?, note = ?, is_budgeted = ?, budget_id = ?, updated_at = ?
+          WHERE id = ?
+        `);
+
+        const tx = db.transaction(() => {
+          rows.forEach((row) => {
+            const suffix = row.installmentIndex && row.installmentTotal ? `（第 ${row.installmentIndex}/${row.installmentTotal} 期）` : '';
+            const noteWithSuffix = suffix ? `${baseNote || '分期账单'}${suffix}` : (baseNote || '分期账单');
+            updateStmt.run(nextAmount, nextCategory, noteWithSuffix, nextIsBudgeted, nextBudgetId, now, row.id);
+          });
+        });
+        tx();
+      } else {
+        const suffix = existing.installment_index && existing.installment_total ? `（第 ${existing.installment_index}/${existing.installment_total} 期）` : '';
+        const noteWithSuffix = suffix ? `${baseNote || '分期账单'}${suffix}` : (baseNote || '分期账单');
+        db.prepare(`
+          UPDATE transactions
+          SET date = ?, amount = ?, category = ?, note = ?, is_budgeted = ?, budget_id = ?, updated_at = ?
+          WHERE id = ?
+        `).run(
+          date ?? existing.date,
+          nextAmount,
+          nextCategory,
+          noteWithSuffix,
+          nextIsBudgeted,
+          nextBudgetId,
+          now,
+          req.params.id,
+        );
+      }
+
+      const updated = db.prepare('SELECT * FROM transactions WHERE id = ?').get(req.params.id);
+      return res.json({ success: true, data: mapTransaction(updated) });
+    }
+
+    if (existing.transaction_type !== 'normal') {
+      return res.status(400).json({ success: false, message: '该类型记录暂不支持编辑' });
+    }
 
     db.prepare(`
       UPDATE transactions
@@ -362,6 +431,7 @@ function mapTransaction(row) {
     installmentPlanId: row.installment_plan_id || undefined,
     installmentIndex: row.installment_index || undefined,
     installmentTotal: row.installment_total || undefined,
+    installmentFee: row.installment_fee || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
