@@ -47,9 +47,40 @@ function getBudgetCycleWindow(budget, refDate = new Date()) {
   if (ref < anchor) {
     return { start: budget.startDate, end: budget.startDate };
   }
-
+/*
   if (budget.cycleType === 'weekly' || (budget.cycleType === 'custom' && budget.cycleDays)) {
     const cycleDays = budget.cycleType === 'weekly' ? 7 : budget.cycleDays;
+    const diffDays = Math.floor((ref.getTime() - anchor.getTime()) / 86400000);
+    const cycleIndex = Math.floor(diffDays / cycleDays);
+    const start = addDays(anchor, cycleIndex * cycleDays);
+    const end = addDays(start, cycleDays - 1);
+    return { start: formatISODate(start), end: formatISODate(end) };
+  }
+*/
+  if (budget.cycleType === 'weekly' || (budget.cycleType === 'custom' && budget.cycleDays)) {
+    if (budget.cycleType === 'weekly') {
+      // 1. 获取当前参考日所属周的周一
+      const refDay = ref.getDay();
+      const mondayOffset = refDay === 0 ? -6 : 1 - refDay;
+      const currentMonday = addDays(ref, mondayOffset);
+      
+      // 2. 计算预算起始日所属的周一（作为新锚点）
+      const anchorDay = anchor.getDay();
+      const anchorMondayOffset = anchorDay === 0 ? -6 : 1 - anchorDay;
+      const anchorMonday = addDays(anchor, anchorMondayOffset);
+      
+      // 3. 计算两者之间的完整周数差
+      const diffDays = Math.floor((currentMonday.getTime() - anchorMonday.getTime()) / 86400000);
+      const cycleIndex = Math.floor(diffDays / 7);
+      
+      // 4. 推算当前周期的起止日期
+      const start = addDays(anchorMonday, cycleIndex * 7);
+      const end = addDays(start, 6);
+      return { start: formatISODate(start), end: formatISODate(end) };
+    }
+    
+    // custom 周期保持原逻辑不变
+    const cycleDays = budget.cycleDays;
     const diffDays = Math.floor((ref.getTime() - anchor.getTime()) / 86400000);
     const cycleIndex = Math.floor(diffDays / cycleDays);
     const start = addDays(anchor, cycleIndex * cycleDays);
