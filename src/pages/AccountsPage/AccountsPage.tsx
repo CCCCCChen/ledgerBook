@@ -289,7 +289,7 @@ export default function AccountsPage() {
 
       {/* 新建/编辑 Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-md">
+        <DialogContent className="sm:max-w-md max-h-[85dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>{editingId ? '编辑账户' : '添加账户'}</DialogTitle>
             <DialogDescription>

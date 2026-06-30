@@ -21,6 +21,7 @@ import { getEffectiveTransactionDate } from '@/lib/cashflow';
 
 type TimeGranularity = 'daily' | 'weekly' | 'monthly';
 type TimelineMode = 'expense' | 'cashflow';
+type WeeklyBudgetNormalizeMode = 'weeks4' | 'days';
 
 interface FutureExpenseItem {
   id: string;
@@ -42,6 +43,44 @@ function getWeekStart(date: Date): string {
 
 function getMonthKey(date: Date): string {
   return formatLocalISOYearMonth(date);
+}
+
+function parseISODate(date: string): Date {
+  return new Date(`${date}T00:00:00`);
+}
+
+function addDays(date: Date, days: number): Date {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function diffDaysInclusive(fromISO: string, toISO: string): number {
+  const from = parseISODate(fromISO);
+  const to = parseISODate(toISO);
+  const ms = to.getTime() - from.getTime();
+  return Math.floor(ms / 86400000) + 1;
+}
+
+function getMonthBounds(dateISO: string): { monthStart: string; monthEnd: string; daysInMonth: number } {
+  const d = parseISODate(dateISO);
+  const start = new Date(d.getFullYear(), d.getMonth(), 1);
+  const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
+  return {
+    monthStart: formatLocalISODate(start),
+    monthEnd: formatLocalISODate(end),
+    daysInMonth: end.getDate(),
+  };
+}
+
+function isFullNaturalMonthRange(rangeFrom: string, rangeTo: string): boolean {
+  const fromBounds = getMonthBounds(rangeFrom);
+  const toBounds = getMonthBounds(rangeTo);
+  return (
+    fromBounds.monthStart === rangeFrom &&
+    fromBounds.monthEnd === rangeTo &&
+    fromBounds.monthStart === toBounds.monthStart
+  );
 }
 
 function getBillingCycleRange(billingDay: number, refDate: Date): { start: string; end: string } {
@@ -68,6 +107,7 @@ export default function StatisticsPage() {
   const [timeGranularity, setTimeGranularity] = useState<TimeGranularity>('daily');
   const [timelineMode, setTimelineMode] = useState<TimelineMode>('expense');
   const [includeBudgetSettlement, setIncludeBudgetSettlement] = useState(true);
+  const [weeklyBudgetNormalizeMode, setWeeklyBudgetNormalizeMode] = useState<WeeklyBudgetNormalizeMode>('weeks4');
   const today = new Date();
   const todayISO = formatLocalISODate(today);
   const monthStartISO = formatLocalISODate(new Date(today.getFullYear(), today.getMonth(), 1));
@@ -165,16 +205,6 @@ export default function StatisticsPage() {
     return [...transactionItems, ...budgetItems].sort((a, b) => a.date.localeCompare(b.date));
   }, [futureExpenseTransactions, includeBudgetSettlement, budgetSettlementItems]);
 
-  const rangeBudgetUsedMap = useMemo(() => {
-    const map: Record<string, number> = {};
-    filteredTransactions.forEach((transaction) => {
-      if (transaction.amount >= 0) return;
-      if (!transaction.budgetId) return;
-      map[transaction.budgetId] = (map[transaction.budgetId] || 0) + Math.abs(transaction.amount);
-    });
-    return map;
-  }, [filteredTransactions]);
-
   // ---- 超支预警 ----
   const overBudgetAlerts = useMemo(() => {
     return budgets
@@ -224,9 +254,75 @@ export default function StatisticsPage() {
   // ---- 预算执行对比 ----
   const budgetCompareOption = useMemo(() => {
     if (budgets.length === 0) return null;
-    const names = budgets.map((b) => b.name);
-    const budgetAmounts = budgets.map((b) => b.amount);
-    const usedAmounts = budgets.map((budget) => rangeBudgetUsedMap[budget.id] || 0);
+    const fullMonth = isFullNaturalMonthRange(rangeFrom, rangeTo);
+    const { monthStart, monthEnd, daysInMonth } = getMonthBounds(rangeFrom);
+    const rangeDays = diffDaysInclusive(rangeFrom, rangeTo);
+
+    const compareRows = budgets
+      .filter((b) => b.cycleType !== 'yearly')
+      .filter((b) => b.cycleType !== 'once')
+      .map((budget) => {
+        let budgetAmountInRange = 0;
+        let usedStart = rangeFrom;
+        let usedEnd = actualCutoff;
+
+        if (fullMonth) {
+          usedStart = monthStart;
+          usedEnd = actualCutoff < monthEnd ? actualCutoff : monthEnd;
+          if (budget.cycleType === 'monthly') {
+            budgetAmountInRange = budget.amount;
+          } else if (budget.cycleType === 'weekly') {
+            budgetAmountInRange =
+              weeklyBudgetNormalizeMode === 'days' ? budget.amount * (daysInMonth / 7) : budget.amount * 4;
+          } else if (budget.cycleType === 'custom') {
+            const cycleDays = budget.cycleDays || 0;
+            const effectiveStart = budget.startDate > monthStart ? budget.startDate : monthStart;
+            if (effectiveStart <= monthEnd && cycleDays > 0) {
+              const overlapRaw = diffDaysInclusive(effectiveStart, monthEnd);
+              const overlapDays = Math.min(overlapRaw, cycleDays);
+              const effectiveEnd = formatLocalISODate(addDays(parseISODate(effectiveStart), overlapDays - 1));
+              usedStart = effectiveStart;
+              usedEnd = effectiveEnd < usedEnd ? effectiveEnd : usedEnd;
+              budgetAmountInRange = budget.amount * (overlapDays / cycleDays);
+            }
+          }
+        } else {
+          if (budget.cycleType === 'monthly') {
+            budgetAmountInRange = budget.amount * (rangeDays / daysInMonth);
+          } else if (budget.cycleType === 'weekly') {
+            budgetAmountInRange = budget.amount * (rangeDays / 7);
+          } else if (budget.cycleType === 'custom') {
+            const cycleDays = budget.cycleDays || 0;
+            if (cycleDays > 0) {
+              const overlapDays = Math.min(rangeDays, cycleDays);
+              budgetAmountInRange = budget.amount * (overlapDays / cycleDays);
+            }
+          }
+        }
+
+        const usedAmount =
+          usedStart <= usedEnd
+            ? transactions
+                .filter((t) => t.amount < 0)
+                .filter((t) => t.budgetId === budget.id)
+                .filter((t) => t.date >= usedStart && t.date <= usedEnd)
+                .reduce((sum, t) => sum + Math.abs(t.amount), 0)
+            : 0;
+
+        return {
+          id: budget.id,
+          name: budget.name,
+          cycleType: budget.cycleType,
+          budgetAmountInRange,
+          usedAmount,
+        };
+      })
+      .filter((row) => row.budgetAmountInRange > 0 || row.usedAmount > 0)
+      .sort((a, b) => b.usedAmount - a.usedAmount);
+
+    const names = compareRows.map((r) => r.name);
+    const budgetAmounts = compareRows.map((r) => r.budgetAmountInRange);
+    const usedAmounts = compareRows.map((r) => r.usedAmount);
 
     return {
       tooltip: { trigger: 'axis' },
@@ -255,7 +351,7 @@ export default function StatisticsPage() {
         },
       ],
     };
-  }, [budgets, rangeBudgetUsedMap]);
+  }, [budgets, rangeFrom, rangeTo, actualCutoff, transactions, weeklyBudgetNormalizeMode]);
 
   // ---- 分类支出分布 ----
   const categoryPieOption = useMemo(() => {
@@ -596,9 +692,32 @@ export default function StatisticsPage() {
         {/* 预算执行对比 */}
         {budgetCompareOption && (
           <Card>
-            <CardHeader>
-              <CardTitle>预算执行对比</CardTitle>
-              <CardDescription>预算金额 vs 实际已使用金额</CardDescription>
+            <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+              <div>
+                <CardTitle>预算执行对比</CardTitle>
+                <CardDescription>
+                  月维度：周预算按{weeklyBudgetNormalizeMode === 'days' ? '当月天数/7' : '4 周'}折算，自定义周期按当月覆盖天数比例折算；不包含年预算
+                </CardDescription>
+              </div>
+              <div className="flex items-end gap-2">
+                <div className="grid gap-1.5">
+                  <Label htmlFor="weekly-normalize" className="text-xs text-muted-foreground">
+                    周预算折算
+                  </Label>
+                  <Select
+                    value={weeklyBudgetNormalizeMode}
+                    onValueChange={(value) => setWeeklyBudgetNormalizeMode(value as WeeklyBudgetNormalizeMode)}
+                  >
+                    <SelectTrigger id="weekly-normalize" className="w-[150px] h-9">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="weeks4">按 4 周</SelectItem>
+                      <SelectItem value="days">按天数比例</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
             </CardHeader>
             <CardContent>
               <ReactECharts option={budgetCompareOption} style={{ height: 360 }} />

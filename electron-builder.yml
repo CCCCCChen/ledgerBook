@@ -34,6 +34,7 @@ nsis:
   createStartMenuShortcut: true
   shortcutName: 个人收支预算管家
   uninstallDisplayName: 个人收支预算管家
+  include: build/installer.nsh # 引入自定义脚本
 
 portable:
   artifactName: ${productName}-${version}-portable.${ext}

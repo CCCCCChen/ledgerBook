@@ -34,10 +34,16 @@ function resolveAccountCashOutDate(date, account) {
 function getCashOutDate(transactionDate, billingDay, repaymentDay) {
   const date = parseISODate(transactionDate);
   const txDay = date.getDate();
-  const closeMonthOffset = txDay <= billingDay ? 0 : 1;
-  const statementClose = getSafeMonthDay(date.getFullYear(), date.getMonth() + closeMonthOffset, billingDay);
-  const dueDate = getSafeMonthDay(statementClose.getFullYear(), statementClose.getMonth() + 1, repaymentDay);
-  return formatISODate(dueDate);
+
+  const cycleStartMonthOffset = txDay >= billingDay ? 0 : -1;
+  const cycleStart = getSafeMonthDay(date.getFullYear(), date.getMonth() + cycleStartMonthOffset, billingDay);
+  const nextCycleStart = getSafeMonthDay(cycleStart.getFullYear(), cycleStart.getMonth() + 1, billingDay);
+  const cycleEnd = new Date(nextCycleStart);
+  cycleEnd.setDate(cycleEnd.getDate() - 1);
+
+  const cashMonthOffset = repaymentDay > billingDay ? 0 : 1;
+  const cashDate = getSafeMonthDay(cycleEnd.getFullYear(), cycleEnd.getMonth() + cashMonthOffset, repaymentDay);
+  return formatISODate(cashDate);
 }
 
 function resolveTransactionCashOutDate(transaction, account) {
