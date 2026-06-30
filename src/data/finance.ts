@@ -1,6 +1,6 @@
-// EXPORTS: MOCK_TRANSACTIONS, MOCK_BUDGETS, MOCK_ACCOUNTS, DEFAULT_CATEGORIES, ACCOUNT_TYPE_LABELS, BUDGET_CYCLE_LABELS
+// EXPORTS: MOCK_TRANSACTIONS, MOCK_BUDGETS, MOCK_ACCOUNTS, MOCK_PLANNED_EXPENSES, DEFAULT_CATEGORIES, ACCOUNT_TYPE_LABELS, BUDGET_CYCLE_LABELS
 
-import type { ITransaction, IBudget, IAccount, TransactionCategory, AccountType, BudgetCycleType } from '@/types/finance';
+import type { ITransaction, IBudget, IAccount, IPlannedExpense, TransactionCategory, AccountType, BudgetCycleType } from '@/types/finance';
 
 export const DEFAULT_CATEGORIES: TransactionCategory[] = ['餐饮', '购物', '交通', '娱乐', '住房', '其他'];
 
@@ -162,3 +162,5 @@ export const MOCK_TRANSACTIONS: ITransaction[] = [
     updatedAt: '2026-06-20T20:00:00.000Z',
   },
 ];
+
+export const MOCK_PLANNED_EXPENSES: IPlannedExpense[] = [];

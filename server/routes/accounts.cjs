@@ -1,6 +1,20 @@
 const express = require('express');
 const router = express.Router();
 const { getDatabase } = require('../db.cjs');
+const { resolveAccountCashOutDate } = require('../cashflow-utils.cjs');
+
+function syncPlannedExpenseCashOutDates(db, accountId) {
+  const account = db
+    .prepare('SELECT id, type, billing_day AS billingDay, repayment_day AS repaymentDay FROM accounts WHERE id = ?')
+    .get(accountId);
+  const rows = db
+    .prepare('SELECT id, planned_date AS plannedDate FROM planned_expenses WHERE account_id = ?')
+    .all(accountId);
+  const updateStmt = db.prepare('UPDATE planned_expenses SET cash_out_date = ? WHERE id = ?');
+  rows.forEach((row) => {
+    updateStmt.run(resolveAccountCashOutDate(row.plannedDate, account) || null, row.id);
+  });
+}
 
 // GET /api/accounts — 获取所有账户
 router.get('/', (req, res) => {
@@ -134,6 +148,8 @@ router.put('/:id', (req, res) => {
       WHERE id = ?
     `).run(newName, newType, needsBilling ? newBillingDay : null, needsBilling ? newRepaymentDay : null, newNote, now, req.params.id);
 
+    syncPlannedExpenseCashOutDates(db, req.params.id);
+
     const row = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
     res.json({ success: true, data: mapAccount(row) });
   } catch (err) {
@@ -152,6 +168,7 @@ router.delete('/:id', (req, res) => {
     }
 
     db.prepare('UPDATE transactions SET account_id = NULL WHERE account_id = ?').run(req.params.id);
+    db.prepare('UPDATE planned_expenses SET account_id = NULL, cash_out_date = NULL WHERE account_id = ?').run(req.params.id);
     db.prepare('DELETE FROM accounts WHERE id = ?').run(req.params.id);
 
     res.json({ success: true, message: '账户已删除' });

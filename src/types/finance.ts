@@ -1,4 +1,4 @@
-// EXPORTS: ITransaction, IBudget, IAccount, TransactionCategory, AccountType, BudgetCycleType, TransactionType
+// EXPORTS: ITransaction, IBudget, IAccount, IPlannedExpense, TransactionCategory, AccountType, BudgetCycleType, TransactionType
 
 export type TransactionCategory = '餐饮' | '购物' | '交通' | '娱乐' | '住房' | '其他';
 
@@ -16,6 +16,7 @@ export type TransactionType = 'normal' | 'repayment_out' | 'repayment_in' | 'ins
 export interface ITransaction {
   id: string;
   date: string;
+  cashOutDate?: string;
   accountId: string;
   amount: number;
   category: TransactionCategory;
@@ -52,6 +53,19 @@ export interface IAccount {
   type: AccountType;
   billingDay?: number;
   repaymentDay?: number;
+  note: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface IPlannedExpense {
+  id: string;
+  name: string;
+  amount: number;
+  plannedDate: string;
+  cashOutDate?: string;
+  accountId?: string;
+  category: TransactionCategory;
   note: string;
   createdAt: string;
   updatedAt: string;

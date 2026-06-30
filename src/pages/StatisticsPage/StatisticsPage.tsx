@@ -16,8 +16,21 @@ import type { ITransaction, IBudget, IAccount } from '@/types/finance';
 import { loadAccounts, loadBudgets, loadTransactions } from '@/lib/data-service';
 import { listBudgetSettlementsForRange } from '@/lib/finance-utils';
 import { formatLocalISODate, formatLocalISOYearMonth } from '@/lib/date';
+import type { BudgetWithStats } from '@/api';
+import { getEffectiveTransactionDate } from '@/lib/cashflow';
 
 type TimeGranularity = 'daily' | 'weekly' | 'monthly';
+type TimelineMode = 'expense' | 'cashflow';
+
+interface FutureExpenseItem {
+  id: string;
+  type: 'installment' | 'future' | 'budget';
+  title: string;
+  date: string;
+  amount: number;
+  accountId: string;
+  originalDate?: string;
+}
 
 function getWeekStart(date: Date): string {
   const d = new Date(date);
@@ -50,9 +63,10 @@ function getBillingCycleRange(billingDay: number, refDate: Date): { start: strin
 export default function StatisticsPage() {
   const navigate = useNavigate();
   const [transactions, setTransactions] = useState<ITransaction[]>([]);
-  const [budgets, setBudgets] = useState<IBudget[]>([]);
+  const [budgets, setBudgets] = useState<BudgetWithStats[]>([]);
   const [accounts, setAccounts] = useState<IAccount[]>([]);
   const [timeGranularity, setTimeGranularity] = useState<TimeGranularity>('daily');
+  const [timelineMode, setTimelineMode] = useState<TimelineMode>('expense');
   const [includeBudgetSettlement, setIncludeBudgetSettlement] = useState(true);
   const today = new Date();
   const todayISO = formatLocalISODate(today);
@@ -81,14 +95,20 @@ export default function StatisticsPage() {
   }, []);
 
   const filteredTransactions = useMemo(
-    () => transactions.filter((transaction) => transaction.date >= rangeFrom && transaction.date <= rangeTo),
-    [transactions, rangeFrom, rangeTo],
+    () =>
+      transactions
+        .map((transaction) => ({
+          ...transaction,
+          effectiveDate: getEffectiveTransactionDate(transaction, timelineMode),
+        }))
+        .filter((transaction) => transaction.effectiveDate >= rangeFrom && transaction.effectiveDate <= rangeTo),
+    [transactions, rangeFrom, rangeTo, timelineMode],
   );
 
   const actualCutoff = useMemo(() => (todayISO < rangeTo ? todayISO : rangeTo), [todayISO, rangeTo]);
 
   const actualTransactions = useMemo(
-    () => filteredTransactions.filter((transaction) => transaction.date <= actualCutoff),
+    () => filteredTransactions.filter((transaction) => transaction.effectiveDate <= actualCutoff),
     [filteredTransactions, actualCutoff],
   );
 
@@ -101,7 +121,7 @@ export default function StatisticsPage() {
   const futureExpenseTransactions = useMemo(() => {
     if (rangeTo < futureFrom) return [];
     return filteredTransactions
-      .filter((transaction) => transaction.amount < 0 && transaction.date > actualCutoff && transaction.date >= futureFrom)
+      .filter((transaction) => transaction.amount < 0 && transaction.effectiveDate > actualCutoff && transaction.effectiveDate >= futureFrom)
       .map((transaction) => ({ ...transaction, amount: Math.abs(transaction.amount) }));
   }, [filteredTransactions, actualCutoff, futureFrom, rangeTo]);
 
@@ -113,16 +133,26 @@ export default function StatisticsPage() {
     [budgets, transactions, rangeFrom, rangeTo, futureFrom],
   );
 
-  const futureExpenseItems = useMemo(() => {
-    const transactionItems = futureExpenseTransactions.map((transaction) => ({
+  const shiftedTransactions = useMemo(
+    () =>
+      transactions
+        .filter((transaction) => transaction.amount < 0)
+        .filter((transaction) => transaction.cashOutDate && transaction.cashOutDate !== transaction.date)
+        .sort((a, b) => (a.cashOutDate || '').localeCompare(b.cashOutDate || '')),
+    [transactions],
+  );
+
+  const futureExpenseItems = useMemo<FutureExpenseItem[]>(() => {
+    const transactionItems: FutureExpenseItem[] = futureExpenseTransactions.map((transaction) => ({
       id: transaction.id,
       type: transaction.transactionType === 'installment_bill' ? 'installment' : 'future',
       title: transaction.note || '未来支出',
-      date: transaction.date,
+      date: transaction.effectiveDate,
       amount: transaction.amount,
       accountId: transaction.accountId,
+      originalDate: transaction.date,
     }));
-    const budgetItems = includeBudgetSettlement
+    const budgetItems: FutureExpenseItem[] = includeBudgetSettlement
       ? budgetSettlementItems.map((item) => ({
           id: `budget-${item.budgetId}-${item.cycleEnd}`,
           type: 'budget',
@@ -148,14 +178,9 @@ export default function StatisticsPage() {
   // ---- 超支预警 ----
   const overBudgetAlerts = useMemo(() => {
     return budgets
-      .map((b) => {
-        const used = rangeBudgetUsedMap[b.id] || 0;
-        const rate = b.amount > 0 ? used / b.amount : 0;
-        return { ...b, used, rate };
-      })
-      .filter((b) => b.rate > 0.8)
+      .filter((budget) => budget.rate >= 80)
       .sort((a, b) => b.rate - a.rate);
-  }, [budgets, rangeBudgetUsedMap]);
+  }, [budgets]);
 
   // ---- 账单周期统计 ----
   const billingCycleOption = useMemo(() => {
@@ -264,14 +289,14 @@ export default function StatisticsPage() {
   const trendOption = useMemo(() => {
     if (actualExpenses.length === 0) return null;
 
-    const sorted = [...actualExpenses].sort((a, b) => a.date.localeCompare(b.date));
+    const sorted = [...actualExpenses].sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
     const buckets: Record<string, number> = {};
 
     sorted.forEach((t) => {
-      const d = new Date(t.date);
+      const d = new Date(t.effectiveDate);
       let key: string;
       if (timeGranularity === 'daily') {
-        key = t.date;
+        key = t.effectiveDate;
       } else if (timeGranularity === 'weekly') {
         key = getWeekStart(d);
       } else {
@@ -361,7 +386,7 @@ export default function StatisticsPage() {
         {/* 页面标题 */}
         <div>
           <h1 className="text-2xl font-bold text-foreground">统计分析</h1>
-          <p className="text-sm text-muted-foreground mt-1">多维度消费数据分析与预算追踪</p>
+          <p className="text-sm text-muted-foreground mt-1">多维度消费数据分析、预算追踪与现金流观察</p>
         </div>
 
         <Card>
@@ -378,6 +403,18 @@ export default function StatisticsPage() {
               <div className="grid gap-1.5">
                 <Label htmlFor="stats-to">结束</Label>
                 <Input id="stats-to" type="date" value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} />
+              </div>
+              <div className="grid gap-1.5">
+                <Label htmlFor="stats-mode">统计口径</Label>
+                <Select value={timelineMode} onValueChange={(value) => setTimelineMode(value as TimelineMode)}>
+                  <SelectTrigger id="stats-mode" className="w-[140px]">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="expense">消费日</SelectItem>
+                    <SelectItem value="cashflow">现金流日</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
           </CardContent>
@@ -410,7 +447,7 @@ export default function StatisticsPage() {
               <CardDescription>交易笔数</CardDescription>
             </CardHeader>
             <CardContent>
-              <p className="text-2xl font-bold tabular-nums">{transactions.length}</p>
+              <p className="text-2xl font-bold tabular-nums">{actualTransactions.length}</p>
             </CardContent>
           </Card>
           <Card>
@@ -429,16 +466,46 @@ export default function StatisticsPage() {
               <p className={`text-2xl font-bold tabular-nums ${expectedBalance >= 0 ? 'text-foreground' : 'text-destructive'}`}>
                 ¥{expectedBalance.toLocaleString()}
               </p>
-              <p className="text-xs text-muted-foreground mt-1">本月待发生支出 ¥{expectedOutflow.toLocaleString()}</p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {timelineMode === 'cashflow' ? '按现金流日' : '按消费日'}待发生支出 ¥{expectedOutflow.toLocaleString()}
+              </p>
             </CardContent>
           </Card>
         </div>
+
+        {timelineMode === 'cashflow' && (
+          <Card>
+            <CardHeader>
+              <CardTitle>预算-现金流差异</CardTitle>
+              <CardDescription>显示信用消费因账单/还款日后移带来的资金支出延后</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              {shiftedTransactions
+                .filter((transaction) => transaction.cashOutDate! >= rangeFrom && transaction.cashOutDate! <= rangeTo)
+                .slice(0, 8)
+                .map((transaction) => (
+                  <div key={transaction.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
+                    <div className="min-w-0">
+                      <p className="font-medium truncate">{transaction.note || transaction.category}</p>
+                      <p className="text-sm text-muted-foreground">
+                        消费日 {transaction.date} {'->'} 现金流日 {transaction.cashOutDate}
+                      </p>
+                    </div>
+                    <p className="font-semibold tabular-nums">¥{Math.abs(transaction.amount).toLocaleString()}</p>
+                  </div>
+                ))}
+              {shiftedTransactions.filter((transaction) => transaction.cashOutDate! >= rangeFrom && transaction.cashOutDate! <= rangeTo).length === 0 && (
+                <p className="text-sm text-muted-foreground py-6 text-center">当前范围内没有消费日和现金流日分离的支出</p>
+              )}
+            </CardContent>
+          </Card>
+        )}
 
         <Card>
           <CardContent className="pt-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div>
               <p className="font-medium">预期支出设置</p>
-              <p className="text-sm text-muted-foreground">开启后会将当前月内到期的预算结算额纳入预期结余</p>
+              <p className="text-sm text-muted-foreground">开启后会将当前范围内到期的预算结算额纳入预期结余</p>
             </div>
             <div className="flex items-center gap-2">
               <Label htmlFor="include-budget-settlement">考虑预算结算</Label>
@@ -455,7 +522,7 @@ export default function StatisticsPage() {
           <Card>
             <CardHeader>
               <CardTitle>预期支出</CardTitle>
-              <CardDescription>展示本月尚未发生的分期账单、未来支出和预算结算</CardDescription>
+              <CardDescription>展示当前范围内尚未发生的分期账单、未来支出和预算结算</CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
               {futureExpenseItems.map((item) => (
@@ -471,6 +538,11 @@ export default function StatisticsPage() {
                       {item.date}
                       {item.accountId ? ` · ${accounts.find((account) => account.id === item.accountId)?.name || '未知账户'}` : ''}
                     </p>
+                    {item.originalDate && item.originalDate !== item.date && (
+                      <p className="text-xs text-muted-foreground mt-1">
+                        消费日 {item.originalDate} {'->'} 现金流日 {item.date}
+                      </p>
+                    )}
                   </div>
                   <p className="font-semibold text-destructive tabular-nums">¥{item.amount.toLocaleString()}</p>
                 </div>
@@ -485,19 +557,20 @@ export default function StatisticsPage() {
             {overBudgetAlerts.map((b) => (
               <Alert
                 key={b.id}
-                variant={b.rate >= 1 ? 'destructive' : 'default'}
+                variant={b.rate >= 100 ? 'destructive' : 'default'}
                 className="cursor-pointer"
                 onClick={() => navigate('/budgets')}
               >
                 <AlertTriangle className="size-4" />
                 <AlertTitle className="flex items-center gap-2">
                   {b.name}
-                  <Badge variant={b.rate >= 1 ? 'destructive' : 'secondary'} className="text-xs">
-                    {b.rate >= 1 ? '已超支' : '即将超支'}
+                  <Badge variant={b.rate >= 100 ? 'destructive' : 'secondary'} className="text-xs">
+                    {b.rate >= 100 ? '已超支' : '即将超支'}
                   </Badge>
                 </AlertTitle>
                 <AlertDescription>
-                  已使用 ¥{b.used.toFixed(0)} / 预算 ¥{b.amount}（{(b.rate * 100).toFixed(0)}%）
+                  已使用 ¥{b.used.toFixed(0)} / 预算 ¥{b.amount}（{b.rate.toFixed(0)}%）
+                  {b.currentPeriodStart && b.currentPeriodEnd ? ` · 当前周期 ${b.currentPeriodStart} ~ ${b.currentPeriodEnd}` : ''}
                 </AlertDescription>
               </Alert>
             ))}
@@ -505,7 +578,7 @@ export default function StatisticsPage() {
         )}
 
         {/* 账单周期统计 */}
-        {billingCycleOption && (
+        {timelineMode === 'expense' && billingCycleOption && (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">

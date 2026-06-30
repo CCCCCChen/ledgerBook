@@ -21,6 +21,13 @@ let tray = null;
 let serverProcess = null;
 let serverUrl = '';
 
+function formatLocalISODate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
 // ============================================================
 // 后端服务管理
 // ============================================================
@@ -292,7 +299,7 @@ ipcMain.handle('export-database', async () => {
   const dbPath = path.join(app.getPath('userData'), 'budget.db');
   const result = await dialog.showSaveDialog(mainWindow, {
     title: '导出数据库',
-    defaultPath: `budget-backup-${new Date().toISOString().slice(0, 10)}.db`,
+    defaultPath: `budget-backup-${formatLocalISODate(new Date())}.db`,
     filters: [
       { name: 'SQLite 数据库', extensions: ['db'] },
       { name: '所有文件', extensions: ['*'] },

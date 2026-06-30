@@ -4,6 +4,7 @@
 const Database = require('better-sqlite3');
 const path = require('path');
 const fs = require('fs');
+const { resolveTransactionCashOutDate, resolveAccountCashOutDate } = require('./cashflow-utils.cjs');
 
 let db = null;
 
@@ -61,10 +62,90 @@ function migrateTransactionsTable() {
   ensureColumn('transactions', 'installment_index', 'INTEGER');
   ensureColumn('transactions', 'installment_total', 'INTEGER');
   ensureColumn('transactions', 'installment_fee', 'REAL');
+  ensureColumn('transactions', 'cash_out_date', 'TEXT');
 }
 
 function migrateAccountsTable() {
   ensureColumn('accounts', 'repayment_day', 'INTEGER');
+}
+
+function migratePlannedExpensesTable() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS planned_expenses (
+      id            TEXT PRIMARY KEY,
+      name          TEXT NOT NULL,
+      amount        REAL NOT NULL CHECK(amount > 0),
+      planned_date  TEXT NOT NULL,
+      cash_out_date TEXT,
+      account_id    TEXT,
+      category      TEXT NOT NULL CHECK(category IN ('餐饮','购物','交通','娱乐','住房','其他')),
+      note          TEXT DEFAULT '',
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL
+    );
+  `);
+  ensureColumn('planned_expenses', 'cash_out_date', 'TEXT');
+}
+
+function backfillTransactionCashOutDates() {
+  const accounts = db.prepare('SELECT id, type, billing_day, repayment_day FROM accounts').all();
+  const accountMap = new Map(
+    accounts.map((account) => [
+      account.id,
+      {
+        id: account.id,
+        type: account.type,
+        billingDay: account.billing_day || undefined,
+        repaymentDay: account.repayment_day || undefined,
+      },
+    ]),
+  );
+  const transactions = db.prepare(`
+    SELECT id, date, amount, transaction_type AS transactionType, account_id AS accountId, cash_out_date AS cashOutDate
+    FROM transactions
+  `).all();
+  const updateStmt = db.prepare('UPDATE transactions SET cash_out_date = ? WHERE id = ?');
+  const tx = db.transaction((rows) => {
+    rows.forEach((row) => {
+      const account = accountMap.get(row.accountId);
+      const nextCashOutDate = resolveTransactionCashOutDate(row, account) || null;
+      if (nextCashOutDate !== (row.cashOutDate || null)) {
+        updateStmt.run(nextCashOutDate, row.id);
+      }
+    });
+  });
+  tx(transactions);
+}
+
+function backfillPlannedExpenseCashOutDates() {
+  const accounts = db.prepare('SELECT id, type, billing_day, repayment_day FROM accounts').all();
+  const accountMap = new Map(
+    accounts.map((account) => [
+      account.id,
+      {
+        id: account.id,
+        type: account.type,
+        billingDay: account.billing_day || undefined,
+        repaymentDay: account.repayment_day || undefined,
+      },
+    ]),
+  );
+  const plannedExpenses = db.prepare(`
+    SELECT id, planned_date AS plannedDate, account_id AS accountId, cash_out_date AS cashOutDate
+    FROM planned_expenses
+  `).all();
+  const updateStmt = db.prepare('UPDATE planned_expenses SET cash_out_date = ? WHERE id = ?');
+  const tx = db.transaction((rows) => {
+    rows.forEach((row) => {
+      const account = accountMap.get(row.accountId);
+      const nextCashOutDate = resolveAccountCashOutDate(row.plannedDate, account) || null;
+      if (nextCashOutDate !== (row.cashOutDate || null)) {
+        updateStmt.run(nextCashOutDate, row.id);
+      }
+    });
+  });
+  tx(plannedExpenses);
 }
 
 /**
@@ -151,16 +232,34 @@ function initDatabase(dbPathOrDir, allowRecovery = true) {
         installment_index INTEGER,
         installment_total INTEGER,
         installment_fee REAL,
+        cash_out_date TEXT,
         created_at  TEXT NOT NULL DEFAULT (datetime('now')),
         updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
         FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE RESTRICT,
         FOREIGN KEY (budget_id) REFERENCES budgets(id) ON DELETE SET NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS planned_expenses (
+        id            TEXT PRIMARY KEY,
+        name          TEXT NOT NULL,
+        amount        REAL NOT NULL CHECK(amount > 0),
+        planned_date  TEXT NOT NULL,
+        cash_out_date TEXT,
+        account_id    TEXT,
+        category      TEXT NOT NULL CHECK(category IN ('餐饮','购物','交通','娱乐','住房','其他')),
+        note          TEXT DEFAULT '',
+        created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL
       );
     `);
 
     migrateAccountsTable();
     migrateBudgetsTableIfNeeded();
     migrateTransactionsTable();
+    migratePlannedExpensesTable();
+    backfillTransactionCashOutDates();
+    backfillPlannedExpenseCashOutDates();
 
     // ---- 插入默认账户（仅当 accounts 表为空） ----
     const accountCount = db.prepare('SELECT COUNT(*) AS cnt FROM accounts').get();
@@ -215,17 +314,17 @@ function initDatabase(dbPathOrDir, allowRecovery = true) {
         INSERT INTO transactions (
           id, date, account_id, amount, category, note, is_budgeted, budget_id,
           transaction_type, transfer_account_id, paired_transaction_id,
-          installment_plan_id, installment_index, installment_total, created_at, updated_at
+          installment_plan_id, installment_index, installment_total, cash_out_date, created_at, updated_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now'))
       `);
 
       const defaultTxns = [
-        ['txn-1', '2026-06-25', 'acc-1', -38,   '餐饮', '一点点奶茶',           1, 'bud-1', 'normal', null, null, null, null, null],
-        ['txn-2', '2026-06-24', 'acc-4', -450,  '购物', '优衣库T恤',            0, null, 'normal', null, null, null, null, null],
-        ['txn-3', '2026-06-23', 'acc-2', -25,   '餐饮', '瑞幸咖啡',             1, 'bud-2', 'normal', null, null, null, null, null],
-        ['txn-4', '2026-06-22', 'acc-5', 15000, '其他', '6月工资',              0, null, 'normal', null, null, null, null, null],
-        ['txn-5', '2026-06-20', 'acc-4', -880,  '娱乐', 'MG 自由高达 2.0',      1, 'bud-3', 'normal', null, null, null, null, null],
+        ['txn-1', '2026-06-25', 'acc-1', -38,   '餐饮', '一点点奶茶',           1, 'bud-1', 'normal', null, null, null, null, null, null],
+        ['txn-2', '2026-06-24', 'acc-4', -450,  '购物', '优衣库T恤',            0, null, 'normal', null, null, null, null, null, null],
+        ['txn-3', '2026-06-23', 'acc-2', -25,   '餐饮', '瑞幸咖啡',             1, 'bud-2', 'normal', null, null, null, null, null, null],
+        ['txn-4', '2026-06-22', 'acc-5', 15000, '其他', '6月工资',              0, null, 'normal', null, null, null, null, null, null],
+        ['txn-5', '2026-06-20', 'acc-4', -880,  '娱乐', 'MG 自由高达 2.0',      1, 'bud-3', 'normal', null, null, null, null, null, null],
       ];
 
       const insertMany = db.transaction((rows) => {
@@ -235,6 +334,9 @@ function initDatabase(dbPathOrDir, allowRecovery = true) {
       });
       insertMany(defaultTxns);
     }
+
+    backfillTransactionCashOutDates();
+    backfillPlannedExpenseCashOutDates();
 
     return db;
   } catch (error) {

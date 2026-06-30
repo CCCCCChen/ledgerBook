@@ -1,9 +1,17 @@
 const express = require('express');
 const router = express.Router();
 const { getDatabase } = require('../db.cjs');
+const { resolveTransactionCashOutDate } = require('../cashflow-utils.cjs');
 
 function createId(prefix) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function formatLocalISODate(date) {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 function addMonths(date, months) {
@@ -42,6 +50,7 @@ function buildRepaymentTransactions(payload) {
       installmentIndex: null,
       installmentTotal: null,
       installmentFee: null,
+      cashOutDate: null,
       createdAt: now,
       updatedAt: now,
     },
@@ -61,6 +70,7 @@ function buildRepaymentTransactions(payload) {
       installmentIndex: null,
       installmentTotal: null,
       installmentFee: null,
+      cashOutDate: null,
       createdAt: now,
       updatedAt: now,
     },
@@ -98,6 +108,7 @@ function buildInstallmentTransactions(payload) {
       installmentIndex: index + 1,
       installmentTotal: installmentCount,
       installmentFee: feeTotal > 0 ? fee : null,
+      cashOutDate: null,
       createdAt: now,
       updatedAt: now,
     });
@@ -124,18 +135,35 @@ function buildNormalTransaction(payload) {
     installmentIndex: payload.installmentIndex || null,
     installmentTotal: payload.installmentTotal || null,
     installmentFee: payload.installmentFee || null,
+    cashOutDate: payload.cashOutDate || null,
     createdAt: now,
     updatedAt: now,
   }];
 }
 
+function applyCashOutDates(db, items) {
+  const uniqueAccountIds = Array.from(new Set(items.map((item) => item.accountId)));
+  const accountRows = db
+    .prepare(
+      'SELECT id, type, billing_day AS billingDay, repayment_day AS repaymentDay FROM accounts WHERE id IN (' +
+        uniqueAccountIds.map(() => '?').join(',') +
+        ')',
+    )
+    .all(...uniqueAccountIds);
+  const accountMap = new Map(accountRows.map((account) => [account.id, account]));
+  items.forEach((item) => {
+    item.cashOutDate = resolveTransactionCashOutDate(item, accountMap.get(item.accountId)) || null;
+  });
+}
+
 function insertTransactions(db, items) {
+  applyCashOutDates(db, items);
   const stmt = db.prepare(`
     INSERT INTO transactions (
       id, date, account_id, amount, category, note, is_budgeted, budget_id,
       transaction_type, transfer_account_id, paired_transaction_id,
-      installment_plan_id, installment_index, installment_total, installment_fee, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      installment_plan_id, installment_index, installment_total, installment_fee, cash_out_date, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertMany = db.transaction((rows) => {
     rows.forEach((row) => {
@@ -155,6 +183,7 @@ function insertTransactions(db, items) {
         row.installmentIndex,
         row.installmentTotal,
         row.installmentFee,
+        row.cashOutDate,
         row.createdAt,
         row.updatedAt,
       );
@@ -326,34 +355,59 @@ router.put('/:id', (req, res) => {
 
         const updateStmt = db.prepare(`
           UPDATE transactions
-          SET date = ?, amount = ?, category = ?, note = ?, is_budgeted = ?, budget_id = ?, updated_at = ?
+          SET date = ?, amount = ?, category = ?, note = ?, is_budgeted = ?, budget_id = ?, cash_out_date = ?, updated_at = ?
           WHERE id = ?
         `);
 
         const baseDate = date ?? existing.date;
         const tx = db.transaction(() => {
+          const accountRow = db.prepare(
+            'SELECT id, type, billing_day AS billingDay, repayment_day AS repaymentDay FROM accounts WHERE id = ?',
+          ).get(existing.account_id);
           rows.forEach((row) => {
             const suffix = row.installmentIndex && row.installmentTotal ? `（第 ${row.installmentIndex}/${row.installmentTotal} 期）` : '';
             const noteWithSuffix = suffix ? `${baseNote || '分期账单'}${suffix}` : (baseNote || '分期账单');
             const nextDate = addMonths(baseDate, (row.installmentIndex || 1) - 1);
-            updateStmt.run(nextDate, nextAmount, nextCategory, noteWithSuffix, nextIsBudgeted, nextBudgetId, now, row.id);
+            const nextCashOutDate = resolveTransactionCashOutDate(
+              {
+                date: nextDate,
+                amount: nextAmount,
+                transactionType: existing.transaction_type,
+                accountId: existing.account_id,
+              },
+              accountRow,
+            ) || null;
+            updateStmt.run(nextDate, nextAmount, nextCategory, noteWithSuffix, nextIsBudgeted, nextBudgetId, nextCashOutDate, now, row.id);
           });
         });
         tx();
       } else {
         const suffix = existing.installment_index && existing.installment_total ? `（第 ${existing.installment_index}/${existing.installment_total} 期）` : '';
         const noteWithSuffix = suffix ? `${baseNote || '分期账单'}${suffix}` : (baseNote || '分期账单');
+        const nextDate = date ?? existing.date;
+        const nextCashOutDate = resolveTransactionCashOutDate(
+          {
+            date: nextDate,
+            amount: nextAmount,
+            transactionType: existing.transaction_type,
+            accountId: existing.account_id,
+          },
+          db.prepare(
+            'SELECT id, type, billing_day AS billingDay, repayment_day AS repaymentDay FROM accounts WHERE id = ?',
+          ).get(existing.account_id),
+        ) || null;
         db.prepare(`
           UPDATE transactions
-          SET date = ?, amount = ?, category = ?, note = ?, is_budgeted = ?, budget_id = ?, updated_at = ?
+          SET date = ?, amount = ?, category = ?, note = ?, is_budgeted = ?, budget_id = ?, cash_out_date = ?, updated_at = ?
           WHERE id = ?
         `).run(
-          date ?? existing.date,
+          nextDate,
           nextAmount,
           nextCategory,
           noteWithSuffix,
           nextIsBudgeted,
           nextBudgetId,
+          nextCashOutDate,
           now,
           req.params.id,
         );
@@ -367,20 +421,35 @@ router.put('/:id', (req, res) => {
       return res.status(400).json({ success: false, message: '该类型记录暂不支持编辑' });
     }
 
+    const nextDate = date ?? existing.date;
+    const nextAccountId = accountId ?? existing.account_id;
+    const nextAmount = amount != null ? Number(amount) : existing.amount;
+    const nextCashOutDate = resolveTransactionCashOutDate(
+      {
+        date: nextDate,
+        amount: nextAmount,
+        transactionType: 'normal',
+        accountId: nextAccountId,
+      },
+      db.prepare(
+        'SELECT id, type, billing_day AS billingDay, repayment_day AS repaymentDay FROM accounts WHERE id = ?',
+      ).get(nextAccountId),
+    ) || null;
     db.prepare(`
       UPDATE transactions
       SET date = ?, account_id = ?, amount = ?, category = ?, note = ?,
-          is_budgeted = ?, budget_id = ?, transaction_type = ?, updated_at = ?
+          is_budgeted = ?, budget_id = ?, transaction_type = ?, cash_out_date = ?, updated_at = ?
       WHERE id = ?
     `).run(
-      date ?? existing.date,
-      accountId ?? existing.account_id,
-      amount != null ? Number(amount) : existing.amount,
+      nextDate,
+      nextAccountId,
+      nextAmount,
       category ?? existing.category,
       note ?? existing.note,
       isBudgeted != null ? (isBudgeted ? 1 : 0) : existing.is_budgeted,
       isBudgeted != null ? (isBudgeted && budgetId ? budgetId : null) : existing.budget_id,
       'normal',
+      nextCashOutDate,
       now,
       req.params.id,
     );
@@ -412,7 +481,7 @@ router.delete('/:id', (req, res) => {
           'SELECT MIN(date) AS firstDate FROM transactions WHERE installment_plan_id = ?',
         ).get(existing.installment_plan_id);
         const firstDate = firstRow?.firstDate;
-        const todayISO = new Date().toISOString().slice(0, 10);
+        const todayISO = formatLocalISODate(new Date());
         if (firstDate && firstDate <= todayISO) {
           return res.status(400).json({ success: false, message: '已到达/超过第一期日期，禁止整组删除分期计划' });
         }
@@ -447,6 +516,7 @@ function mapTransaction(row) {
     installmentIndex: row.installment_index || undefined,
     installmentTotal: row.installment_total || undefined,
     installmentFee: row.installment_fee || undefined,
+    cashOutDate: row.cash_out_date || undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

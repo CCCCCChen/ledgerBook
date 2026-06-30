@@ -2,7 +2,7 @@
 // 提供与原有 storage 模块兼容的接口，底层调用后端 RESTful API
 
 import { api } from './client';
-import type { ITransaction, IBudget, IAccount } from '@/types/finance';
+import type { ITransaction, IBudget, IAccount, IPlannedExpense } from '@/types/finance';
 
 export interface CreateTransactionInput extends Partial<ITransaction> {
   repaymentTargetAccountId?: string;
@@ -14,6 +14,10 @@ export interface UpdateTransactionInput extends Partial<ITransaction> {
   editScope?: 'single' | 'plan';
   feeTotal?: number;
 }
+
+export interface CreatePlannedExpenseInput extends Partial<IPlannedExpense> {}
+
+export interface UpdatePlannedExpenseInput extends Partial<IPlannedExpense> {}
 
 // ============================================================
 // 账户 API
@@ -74,6 +78,47 @@ export const budgetsApi = {
   create: (data: Partial<IBudget>) => api.post<{ success: boolean; data: BudgetWithStats }>('/api/budgets', data),
   update: (id: string, data: Partial<IBudget>) => api.put<{ success: boolean; data: BudgetWithStats }>(`/api/budgets/${id}`, data),
   remove: (id: string) => api.delete<{ success: boolean }>(`/api/budgets/${id}`),
+};
+
+// ============================================================
+// 预估支出 API
+// ============================================================
+export const plannedExpensesApi = {
+  list: () => api.get<{ success: boolean; data: IPlannedExpense[] }>('/api/planned-expenses'),
+  get: (id: string) => api.get<{ success: boolean; data: IPlannedExpense }>(`/api/planned-expenses/${id}`),
+  create: (data: CreatePlannedExpenseInput) =>
+    api.post<{ success: boolean; data: IPlannedExpense }>('/api/planned-expenses', data),
+  update: (id: string, data: UpdatePlannedExpenseInput) =>
+    api.put<{ success: boolean; data: IPlannedExpense }>(`/api/planned-expenses/${id}`, data),
+  remove: (id: string) => api.delete<{ success: boolean }>(`/api/planned-expenses/${id}`),
+};
+
+// ============================================================
+// Forecast API
+// ============================================================
+export interface ForecastImpactInput {
+  rangeFrom: string;
+  rangeTo: string;
+  startBalance: number;
+  includePlannedExpenses?: boolean;
+  includeBudgetSettlement?: boolean;
+  simulatedExpense?: {
+    date: string;
+    amount: number;
+    accountId?: string;
+  };
+}
+
+export const forecastApi = {
+  impact: (data: ForecastImpactInput) =>
+    api.post<{
+      success: boolean;
+      data: {
+        baseline: { minBalance: number; minDate: string; endBalance: number };
+        withExpense: { minBalance: number; minDate: string; endBalance: number };
+        delta: { minBalance: number; endBalance: number };
+      };
+    }>('/api/forecast/impact', data),
 };
 
 // ============================================================

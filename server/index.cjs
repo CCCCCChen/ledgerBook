@@ -7,6 +7,8 @@ const accountsRouter = require('./routes/accounts.cjs');
 const transactionsRouter = require('./routes/transactions.cjs');
 const budgetsRouter = require('./routes/budgets.cjs');
 const statisticsRouter = require('./routes/statistics.cjs');
+const plannedExpensesRouter = require('./routes/planned-expenses.cjs');
+const forecastRouter = require('./routes/forecast.cjs');
 
 /**
  * 创建 Express 应用实例
@@ -41,6 +43,8 @@ async function createServer({ dbPath, port, staticDir }) {
   app.use('/api/transactions', transactionsRouter);
   app.use('/api/budgets', budgetsRouter);
   app.use('/api/statistics', statisticsRouter);
+  app.use('/api/planned-expenses', plannedExpensesRouter);
+  app.use('/api/forecast', forecastRouter);
 
   // 生产模式：托管前端静态文件
   if (staticDir) {

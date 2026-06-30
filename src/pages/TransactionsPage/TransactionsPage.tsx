@@ -46,7 +46,8 @@ import { DEFAULT_CATEGORIES, ACCOUNT_TYPE_LABELS } from '@/data/finance';
 import { exportAllData, importAllData } from '@/lib/storage';
 import { createTransaction, deleteTransaction, loadAccounts, loadBudgets, loadTransactions, updateTransaction } from '@/lib/data-service';
 import { getElectronAPI, isElectronRuntime } from '@/lib/electron-api';
-import { nowLocalISODate } from '@/lib/date';
+import { formatLocalISODate, nowLocalISODate } from '@/lib/date';
+import { forecastApi } from '@/api';
 
 const CATEGORIES: TransactionCategory[] = DEFAULT_CATEGORIES;
 const IS_ELECTRON = isElectronRuntime();
@@ -71,6 +72,12 @@ interface TransactionFormData {
   note: string;
   isBudgeted: boolean;
   budgetId: string;
+}
+
+interface ImpactResult {
+  baseline: { minBalance: number; minDate: string; endBalance: number };
+  withExpense: { minBalance: number; minDate: string; endBalance: number };
+  delta: { minBalance: number; endBalance: number };
 }
 
 const EMPTY_FORM: TransactionFormData = {
@@ -108,6 +115,12 @@ export default function TransactionsPage() {
   const [editingMeta, setEditingMeta] = useState<{ transactionType?: TransactionType; installmentPlanId?: string } | null>(null);
   const [form, setForm] = useState<TransactionFormData>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
+  const [impactStartBalance, setImpactStartBalance] = useState('0');
+  const [impactSafetyLine, setImpactSafetyLine] = useState('0');
+  const [impactIncludePlannedExpenses, setImpactIncludePlannedExpenses] = useState(true);
+  const [impactIncludeBudgetSettlement, setImpactIncludeBudgetSettlement] = useState(true);
+  const [impactLoading, setImpactLoading] = useState(false);
+  const [impactResult, setImpactResult] = useState<ImpactResult | null>(null);
 
   // Delete confirm
   const [deleteTarget, setDeleteTarget] = useState<ITransaction | null>(null);
@@ -193,6 +206,8 @@ export default function TransactionsPage() {
     return b ? b.name : '';
   };
   const getTransactionTypeLabel = (type?: TransactionType) => TRANSACTION_TYPE_LABELS[type || 'normal'];
+  const isCashFlowShifted = (transaction: ITransaction) =>
+    !!transaction.cashOutDate && transaction.cashOutDate !== transaction.date;
   const selectedAccount = accounts.find((account) => account.id === form.accountId);
   const repaymentTargets = accounts.filter((account) => account.type === 'credit_card' || account.type === 'alipay_huabei');
   const debitAccounts = accounts.filter((account) => account.type === 'debit_card');
@@ -203,6 +218,7 @@ export default function TransactionsPage() {
     setEditingId(null);
     setEditingMeta(null);
     setForm({ ...EMPTY_FORM, date: nowLocalISODate() });
+    setImpactResult(null);
     setDialogOpen(true);
   };
 
@@ -228,7 +244,71 @@ export default function TransactionsPage() {
       isBudgeted: txn.isBudgeted,
       budgetId: txn.budgetId || '',
     });
+    setImpactResult(null);
     setDialogOpen(true);
+  };
+
+  function addMonths(dateISO: string, months: number): string {
+    const date = new Date(`${dateISO}T00:00:00`);
+    const originalDay = date.getDate();
+    date.setDate(1);
+    date.setMonth(date.getMonth() + months);
+    const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
+    date.setDate(Math.min(originalDay, lastDay));
+    return formatLocalISODate(date);
+  }
+
+  const runImpact = async () => {
+    const todayISO = nowLocalISODate();
+    if (form.transactionType !== 'normal') {
+      toast.error('当前仅支持对“普通支出”做影响评估');
+      return;
+    }
+    if (!form.isExpense) {
+      toast.error('当前仅支持对“支出”做影响评估');
+      return;
+    }
+    if (!form.date || form.date < todayISO) {
+      toast.error('影响评估用于未来消费，请将日期设置为今天或之后');
+      return;
+    }
+    if (!form.accountId) {
+      toast.error('请选择账户（用于推导现金流日）');
+      return;
+    }
+    if (!form.amount || Number(form.amount) <= 0) {
+      toast.error('请输入有效金额');
+      return;
+    }
+
+    const rangeFrom = todayISO;
+    const baseTo = addMonths(todayISO, 6);
+    const rangeTo = form.date > baseTo ? addMonths(form.date, 6) : baseTo;
+
+    setImpactLoading(true);
+    try {
+      const res = await forecastApi.impact({
+        rangeFrom,
+        rangeTo,
+        startBalance: Number(impactStartBalance || 0),
+        includePlannedExpenses: impactIncludePlannedExpenses,
+        includeBudgetSettlement: impactIncludeBudgetSettlement,
+        simulatedExpense: {
+          date: form.date,
+          amount: Number(form.amount),
+          accountId: form.accountId,
+        },
+      });
+      if (!res.success) {
+        toast.error('影响评估失败');
+        return;
+      }
+      setImpactResult(res.data);
+    } catch (error) {
+      toast.error(`影响评估失败：${String(error)}`);
+    } finally {
+      setImpactLoading(false);
+    }
   };
 
   const handleSubmit = async (e: FormEvent) => {
@@ -681,7 +761,12 @@ export default function TransactionsPage() {
                     {filtered.map((txn) => (
                       <TableRow key={txn.id}>
                         <TableCell className="whitespace-nowrap text-sm">
-                          {txn.date}
+                          <div>{txn.date}</div>
+                          {isCashFlowShifted(txn) && (
+                            <div className="text-xs text-muted-foreground">
+                              现金流日 {txn.cashOutDate}
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
                           <div className="text-sm font-medium">{getAccountName(txn.accountId)}</div>
@@ -721,6 +806,11 @@ export default function TransactionsPage() {
                           {txn.installmentFee != null && txn.installmentFee > 0 && (
                             <span className="block truncate text-xs text-muted-foreground">
                               含手续费：¥{txn.installmentFee.toLocaleString()}
+                            </span>
+                          )}
+                          {isCashFlowShifted(txn) && (
+                            <span className="block truncate text-xs text-muted-foreground">
+                              记账日 {txn.date}，预计还款日 {txn.cashOutDate}
                             </span>
                           )}
                         </TableCell>
@@ -784,7 +874,10 @@ export default function TransactionsPage() {
                   id="txn-date"
                   type="date"
                   value={form.date}
-                  onChange={(e) => setForm({ ...form, date: e.target.value })}
+                  onChange={(e) => {
+                    setForm({ ...form, date: e.target.value });
+                    setImpactResult(null);
+                  }}
                   required
                 />
               </div>
@@ -839,7 +932,10 @@ export default function TransactionsPage() {
                 <Label>{form.transactionType === 'repayment_out' ? '扣款账户（储蓄卡）' : '账户'}</Label>
                 <Select
                   value={form.accountId}
-                  onValueChange={(v) => setForm({ ...form, accountId: v })}
+                  onValueChange={(v) => {
+                    setForm({ ...form, accountId: v });
+                    setImpactResult(null);
+                  }}
                   disabled={editingMeta?.transactionType === 'installment_bill'}
                 >
                   <SelectTrigger>
@@ -886,7 +982,10 @@ export default function TransactionsPage() {
                       variant={form.isExpense ? 'destructive' : 'outline'}
                       size="sm"
                       className="shrink-0"
-                      onClick={() => setForm({ ...form, isExpense: !form.isExpense })}
+                      onClick={() => {
+                        setForm({ ...form, isExpense: !form.isExpense });
+                        setImpactResult(null);
+                      }}
                     >
                       {form.isExpense ? '支出' : '收入'}
                     </Button>
@@ -901,7 +1000,10 @@ export default function TransactionsPage() {
                     step="0.01"
                     min="0.01"
                     value={form.amount}
-                    onChange={(e) => setForm({ ...form, amount: e.target.value })}
+                    onChange={(e) => {
+                      setForm({ ...form, amount: e.target.value });
+                      setImpactResult(null);
+                    }}
                     placeholder="0.00"
                     required
                     className="flex-1"
@@ -1006,6 +1108,101 @@ export default function TransactionsPage() {
                       ))}
                     </SelectContent>
                   </Select>
+                </div>
+              )}
+
+              {form.transactionType === 'normal' && form.isExpense && (
+                <div className="rounded-lg border p-3 space-y-3">
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="min-w-0">
+                      <p className="font-medium">大额消费影响评估</p>
+                      <p className="text-xs text-muted-foreground">在未来 6 个月范围内，对比“基线”与“新增本笔消费”后的最低余额</p>
+                    </div>
+                    <Button type="button" variant="outline" size="sm" onClick={() => void runImpact()} disabled={impactLoading}>
+                      {impactLoading ? '评估中...' : '查看影响'}
+                    </Button>
+                  </div>
+
+                  <div className="flex flex-wrap items-end gap-3">
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="impact-start-balance">起始余额</Label>
+                      <Input
+                        id="impact-start-balance"
+                        type="number"
+                        step="0.01"
+                        value={impactStartBalance}
+                        onChange={(e) => {
+                          setImpactStartBalance(e.target.value);
+                          setImpactResult(null);
+                        }}
+                        className="w-[140px]"
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="impact-safety-line">安全线</Label>
+                      <Input
+                        id="impact-safety-line"
+                        type="number"
+                        step="0.01"
+                        value={impactSafetyLine}
+                        onChange={(e) => {
+                          setImpactSafetyLine(e.target.value);
+                          setImpactResult(null);
+                        }}
+                        className="w-[140px]"
+                      />
+                    </div>
+                    <div className="flex items-center gap-2 pb-1">
+                      <Label htmlFor="impact-include-planned">考虑预估支出</Label>
+                      <Switch
+                        id="impact-include-planned"
+                        checked={impactIncludePlannedExpenses}
+                        onCheckedChange={(checked) => {
+                          setImpactIncludePlannedExpenses(checked);
+                          setImpactResult(null);
+                        }}
+                      />
+                    </div>
+                    <div className="flex items-center gap-2 pb-1">
+                      <Label htmlFor="impact-include-budget">考虑预算结算</Label>
+                      <Switch
+                        id="impact-include-budget"
+                        checked={impactIncludeBudgetSettlement}
+                        onCheckedChange={(checked) => {
+                          setImpactIncludeBudgetSettlement(checked);
+                          setImpactResult(null);
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  {impactResult && (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="rounded-lg border p-3">
+                        <p className="text-xs text-muted-foreground">基线最低余额</p>
+                        <p className="text-base font-semibold tabular-nums">¥{Math.round(impactResult.baseline.minBalance).toLocaleString()}</p>
+                        <p className="text-xs text-muted-foreground mt-1">{impactResult.baseline.minDate}</p>
+                      </div>
+                      <div className="rounded-lg border p-3">
+                        <p className="text-xs text-muted-foreground">新增后最低余额</p>
+                        <p
+                          className={`text-base font-semibold tabular-nums ${
+                            impactResult.withExpense.minBalance < Number(impactSafetyLine || 0) ? 'text-destructive' : 'text-foreground'
+                          }`}
+                        >
+                          ¥{Math.round(impactResult.withExpense.minBalance).toLocaleString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground mt-1">{impactResult.withExpense.minDate}</p>
+                      </div>
+                      <div className="rounded-lg border p-3">
+                        <p className="text-xs text-muted-foreground">最低余额变化</p>
+                        <p className="text-base font-semibold tabular-nums">¥{Math.round(impactResult.delta.minBalance).toLocaleString()}</p>
+                        <p className="text-xs text-muted-foreground mt-1">
+                          期末变化 ¥{Math.round(impactResult.delta.endBalance).toLocaleString()}
+                        </p>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

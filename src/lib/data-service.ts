@@ -6,14 +6,17 @@ import {
   accountsApi,
   transactionsApi,
   budgetsApi,
+  plannedExpensesApi,
   statisticsApi,
   type TransactionFilters,
   type BudgetWithStats,
   type CreateTransactionInput,
   type UpdateTransactionInput,
+  type CreatePlannedExpenseInput,
+  type UpdatePlannedExpenseInput,
 } from '@/api/index';
-import type { ITransaction, IBudget, IAccount } from '@/types/finance';
-import { MOCK_ACCOUNTS, MOCK_BUDGETS, MOCK_TRANSACTIONS } from '@/data/finance';
+import type { ITransaction, IBudget, IAccount, IPlannedExpense } from '@/types/finance';
+import { MOCK_ACCOUNTS, MOCK_BUDGETS, MOCK_PLANNED_EXPENSES, MOCK_TRANSACTIONS } from '@/data/finance';
 import {
   getItem,
   setItem,
@@ -23,6 +26,7 @@ import {
 } from './storage';
 import { getBudgetCycleWindow, getBudgetRate, getBudgetUsedInWindow } from './finance-utils';
 import { formatLocalISODate, nowLocalISODate } from './date';
+import { resolveAccountCashOutDate, resolveTransactionCashOutDate } from './cashflow';
 
 // ============================================================
 // localStorage 辅助函数
@@ -38,7 +42,23 @@ function lsSaveAccounts(accounts: IAccount[]): void {
 }
 function lsLoadTransactions(): ITransaction[] {
   const data = getItem<ITransaction>(STORAGE_KEYS.transactions);
-  if (data.length > 0) return data;
+  if (data.length > 0) {
+    const accounts = lsLoadAccounts();
+    const accountMap = new Map(accounts.map((account) => [account.id, account]));
+    let changed = false;
+    const normalized = data.map((transaction) => {
+      const nextCashOutDate = resolveTransactionCashOutDate(transaction, accountMap.get(transaction.accountId)) || undefined;
+      if (transaction.cashOutDate !== nextCashOutDate) {
+        changed = true;
+        return { ...transaction, cashOutDate: nextCashOutDate };
+      }
+      return transaction;
+    });
+    if (changed) {
+      setItem(STORAGE_KEYS.transactions, normalized);
+    }
+    return normalized;
+  }
   setItem(STORAGE_KEYS.transactions, MOCK_TRANSACTIONS);
   return MOCK_TRANSACTIONS;
 }
@@ -53,6 +73,32 @@ function lsLoadBudgets(): IBudget[] {
 }
 function lsSaveBudgets(budgets: IBudget[]): void {
   setItem(STORAGE_KEYS.budgets, budgets);
+}
+function lsLoadPlannedExpenses(): IPlannedExpense[] {
+  const data = getItem<IPlannedExpense>(STORAGE_KEYS.plannedExpenses);
+  if (data.length > 0) {
+    const accounts = lsLoadAccounts();
+    const accountMap = new Map(accounts.map((account) => [account.id, account]));
+    let changed = false;
+    const normalized = data.map((plannedExpense) => {
+      const nextCashOutDate =
+        resolveAccountCashOutDate(plannedExpense.plannedDate, accountMap.get(plannedExpense.accountId || '')) || undefined;
+      if (plannedExpense.cashOutDate !== nextCashOutDate) {
+        changed = true;
+        return { ...plannedExpense, cashOutDate: nextCashOutDate };
+      }
+      return plannedExpense;
+    });
+    if (changed) {
+      setItem(STORAGE_KEYS.plannedExpenses, normalized);
+    }
+    return normalized;
+  }
+  setItem(STORAGE_KEYS.plannedExpenses, MOCK_PLANNED_EXPENSES);
+  return MOCK_PLANNED_EXPENSES;
+}
+function lsSavePlannedExpenses(plannedExpenses: IPlannedExpense[]): void {
+  setItem(STORAGE_KEYS.plannedExpenses, plannedExpenses);
 }
 
 // ============================================================
@@ -126,6 +172,18 @@ export async function updateAccount(id: string, data: Partial<IAccount>): Promis
   if (idx === -1) return null;
   accounts[idx] = { ...accounts[idx], ...data, updatedAt: new Date().toISOString() };
   lsSaveAccounts(accounts);
+  const accountMap = new Map(accounts.map((account) => [account.id, account]));
+  const transactions = lsLoadTransactions().map((transaction) => ({
+    ...transaction,
+    cashOutDate: resolveTransactionCashOutDate(transaction, accountMap.get(transaction.accountId)) || undefined,
+  }));
+  const plannedExpenses = lsLoadPlannedExpenses().map((plannedExpense) => ({
+    ...plannedExpense,
+    cashOutDate:
+      resolveAccountCashOutDate(plannedExpense.plannedDate, accountMap.get(plannedExpense.accountId || '')) || undefined,
+  }));
+  lsSaveTransactions(transactions);
+  lsSavePlannedExpenses(plannedExpenses);
   return accounts[idx];
 }
 
@@ -140,8 +198,12 @@ export async function deleteAccount(id: string): Promise<boolean> {
   }
   const accounts = lsLoadAccounts().filter((a) => a.id !== id);
   const transactions = lsLoadTransactions().map((t) => (t.accountId === id ? { ...t, accountId: '' } : t));
+  const plannedExpenses = lsLoadPlannedExpenses().map((item) =>
+    item.accountId === id ? { ...item, accountId: undefined, cashOutDate: undefined } : item,
+  );
   lsSaveAccounts(accounts);
   lsSaveTransactions(transactions);
+  lsSavePlannedExpenses(plannedExpenses);
   return true;
 }
 
@@ -178,9 +240,12 @@ export async function createTransaction(data: CreateTransactionInput): Promise<I
     const amount = Math.abs(Number(data.amount));
     const now = new Date().toISOString();
     const pairId = `pair-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const accounts = lsLoadAccounts();
+    const accountMap = new Map(accounts.map((account) => [account.id, account]));
     const outTxn: ITransaction = {
       id: `txn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      date: data.date || now.slice(0, 10),
+      date: data.date || nowLocalISODate(),
+      cashOutDate: undefined,
       accountId: data.accountId,
       amount: -amount,
       category: '其他',
@@ -194,7 +259,8 @@ export async function createTransaction(data: CreateTransactionInput): Promise<I
     };
     const inTxn: ITransaction = {
       id: `txn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-r`,
-      date: data.date || now.slice(0, 10),
+      date: data.date || nowLocalISODate(),
+      cashOutDate: undefined,
       accountId: data.transferAccountId,
       amount,
       category: '其他',
@@ -217,6 +283,8 @@ export async function createTransaction(data: CreateTransactionInput): Promise<I
     const txns = lsLoadTransactions();
     const now = new Date().toISOString();
     const planId = `inst-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const accounts = lsLoadAccounts();
+    const accountMap = new Map(accounts.map((account) => [account.id, account]));
     const perAmount = Math.abs(Number(data.amount || 0));
     const feeTotal = data.feeTotal != null ? Math.abs(Number(data.feeTotal)) : 0;
     const perFee = feeTotal > 0 ? Math.round((feeTotal / installmentCount) * 100) / 100 : 0;
@@ -226,11 +294,21 @@ export async function createTransaction(data: CreateTransactionInput): Promise<I
       const fee = feeTotal > 0 ? (isLast ? Math.round((feeTotal - feeAllocated) * 100) / 100 : perFee) : 0;
       feeAllocated += fee;
       const amount = perAmount + fee;
-      const date = new Date(`${data.date || now.slice(0, 10)}T00:00:00`);
+      const date = new Date(`${data.date || nowLocalISODate()}T00:00:00`);
       date.setMonth(date.getMonth() + index);
       txns.push({
         id: `txn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}-${index + 1}`,
         date: formatLocalISODate(date),
+        cashOutDate:
+          resolveTransactionCashOutDate(
+            {
+              date: formatLocalISODate(date),
+              amount: -amount,
+              transactionType: 'installment_bill',
+              accountId: data.accountId || '',
+            },
+            accountMap.get(data.accountId || ''),
+          ) || undefined,
         accountId: data.accountId || '',
         amount: -amount,
         category: data.category || '其他',
@@ -253,9 +331,21 @@ export async function createTransaction(data: CreateTransactionInput): Promise<I
   const txns = lsLoadTransactions();
   const id = `txn-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
   const now = new Date().toISOString();
+  const accounts = lsLoadAccounts();
+  const accountMap = new Map(accounts.map((account) => [account.id, account]));
   const newTxn: ITransaction = {
     id,
-    date: data.date || now.slice(0, 10),
+    date: data.date || nowLocalISODate(),
+    cashOutDate:
+      resolveTransactionCashOutDate(
+        {
+          date: data.date || nowLocalISODate(),
+          amount: Number(data.amount || 0),
+          transactionType: data.transactionType || 'normal',
+          accountId: data.accountId || '',
+        },
+        accountMap.get(data.accountId || ''),
+      ) || undefined,
     accountId: data.accountId || '',
     amount: data.amount || 0,
     category: data.category || '其他',
@@ -301,6 +391,8 @@ export async function updateTransaction(id: string, data: UpdateTransactionInput
     const budgetId = isBudgeted ? (data.budgetId ?? txns[idx].budgetId) : undefined;
     const now = new Date().toISOString();
     const baseDate = data.date ?? txns[idx].date;
+    const accounts = lsLoadAccounts();
+    const accountMap = new Map(accounts.map((account) => [account.id, account]));
     if (scope === 'plan' && planId) {
       txns.forEach((transaction) => {
         if (transaction.installmentPlanId !== planId) return;
@@ -318,6 +410,8 @@ export async function updateTransaction(id: string, data: UpdateTransactionInput
         transaction.note = suffix ? `${baseNote || '分期账单'}${suffix}` : baseNote || '分期账单';
         transaction.isBudgeted = isBudgeted;
         transaction.budgetId = budgetId;
+        transaction.cashOutDate =
+          resolveTransactionCashOutDate(transaction, accountMap.get(transaction.accountId)) || undefined;
         transaction.updatedAt = now;
       });
     } else {
@@ -333,13 +427,29 @@ export async function updateTransaction(id: string, data: UpdateTransactionInput
         note: suffix ? `${baseNote || '分期账单'}${suffix}` : baseNote || '分期账单',
         isBudgeted,
         budgetId,
+        cashOutDate:
+          resolveTransactionCashOutDate(
+            {
+              ...txns[idx],
+              date: data.date ?? txns[idx].date,
+              amount,
+            },
+            accountMap.get(txns[idx].accountId),
+          ) || undefined,
         updatedAt: now,
       };
     }
     lsSaveTransactions(txns);
     return txns[idx];
   }
-  txns[idx] = { ...txns[idx], ...data, updatedAt: new Date().toISOString() };
+  const accounts = lsLoadAccounts();
+  const accountMap = new Map(accounts.map((account) => [account.id, account]));
+  const nextTxn = { ...txns[idx], ...data };
+  txns[idx] = {
+    ...nextTxn,
+    cashOutDate: resolveTransactionCashOutDate(nextTxn, accountMap.get(nextTxn.accountId)) || undefined,
+    updatedAt: new Date().toISOString(),
+  };
   lsSaveTransactions(txns);
   return txns[idx];
 }
@@ -435,7 +545,7 @@ export async function createBudget(data: Partial<IBudget>): Promise<BudgetWithSt
     name: data.name || '',
     amount: data.amount || 0,
     cycleType: data.cycleType || 'monthly',
-    startDate: data.startDate || now.slice(0, 10),
+    startDate: data.startDate || nowLocalISODate(),
     endDate: data.endDate,
     cycleDays: data.cycleDays,
     category: data.category,
@@ -482,6 +592,99 @@ export async function deleteBudget(id: string): Promise<boolean> {
   });
   lsSaveBudgets(budgets);
   lsSaveTransactions(transactions);
+  return true;
+}
+
+// ============================================================
+// 预估支出
+// ============================================================
+export async function loadPlannedExpenses(): Promise<IPlannedExpense[]> {
+  if (isElectron()) {
+    try {
+      const res = await plannedExpensesApi.list();
+      return res.data;
+    } catch {
+      return lsLoadPlannedExpenses();
+    }
+  }
+  return lsLoadPlannedExpenses();
+}
+
+export async function createPlannedExpense(data: CreatePlannedExpenseInput): Promise<IPlannedExpense | null> {
+  if (isElectron()) {
+    try {
+      const res = await plannedExpensesApi.create(data);
+      return res.data;
+    } catch {
+      return null;
+    }
+  }
+  const plannedExpenses = lsLoadPlannedExpenses();
+  const accounts = lsLoadAccounts();
+  const accountMap = new Map(accounts.map((account) => [account.id, account]));
+  const id = `pex-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const now = new Date().toISOString();
+  const plannedDate = data.plannedDate || nowLocalISODate();
+  const accountId = data.accountId || undefined;
+  const newItem: IPlannedExpense = {
+    id,
+    name: data.name || '',
+    amount: Number(data.amount || 0),
+    plannedDate,
+    cashOutDate: resolveAccountCashOutDate(plannedDate, accountMap.get(accountId || '')) || undefined,
+    accountId,
+    category: data.category || '其他',
+    note: data.note || '',
+    createdAt: now,
+    updatedAt: now,
+  };
+  plannedExpenses.push(newItem);
+  lsSavePlannedExpenses(plannedExpenses);
+  return newItem;
+}
+
+export async function updatePlannedExpense(id: string, data: UpdatePlannedExpenseInput): Promise<IPlannedExpense | null> {
+  if (isElectron()) {
+    try {
+      const res = await plannedExpensesApi.update(id, data);
+      return res.data;
+    } catch {
+      return null;
+    }
+  }
+  const plannedExpenses = lsLoadPlannedExpenses();
+  const idx = plannedExpenses.findIndex((item) => item.id === id);
+  if (idx === -1) return null;
+  const accounts = lsLoadAccounts();
+  const accountMap = new Map(accounts.map((account) => [account.id, account]));
+  const nextItem = {
+    ...plannedExpenses[idx],
+    ...data,
+    amount: data.amount !== undefined ? Number(data.amount) : plannedExpenses[idx].amount,
+    accountId: data.accountId || undefined,
+    updatedAt: new Date().toISOString(),
+  };
+  plannedExpenses[idx] = {
+    ...nextItem,
+    cashOutDate: resolveAccountCashOutDate(nextItem.plannedDate, accountMap.get(nextItem.accountId || '')) || undefined,
+  };
+  lsSavePlannedExpenses(plannedExpenses);
+  return plannedExpenses[idx];
+}
+
+export async function deletePlannedExpense(id: string): Promise<boolean> {
+  if (isElectron()) {
+    try {
+      await plannedExpensesApi.remove(id);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  const plannedExpenses = lsLoadPlannedExpenses();
+  const nextItems = plannedExpenses.filter((item) => item.id !== id);
+  if (nextItems.length === plannedExpenses.length) return false;
+  lsSavePlannedExpenses(nextItems);
   return true;
 }
 
