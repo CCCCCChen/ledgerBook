@@ -41,8 +41,8 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import type { IAccount, IBudget, ITransaction, TransactionCategory, TransactionType } from '@/types/finance';
-import { DEFAULT_CATEGORIES, ACCOUNT_TYPE_LABELS } from '@/data/finance';
+import type { IAccount, IBudget, ITransaction, TransactionCategory, TransactionType, ExpenseAttribute } from '@/types/finance';
+import { DEFAULT_CATEGORIES, ACCOUNT_TYPE_LABELS, EXPENSE_ATTRIBUTE_LABELS } from '@/data/finance';
 import { exportAllData, importAllData } from '@/lib/storage';
 import { createTransaction, deleteTransaction, loadAccounts, loadBudgets, loadTransactions, updateTransaction } from '@/lib/data-service';
 import { getElectronAPI, isElectronRuntime } from '@/lib/electron-api';
@@ -56,6 +56,7 @@ const TRANSACTION_TYPE_LABELS: Record<TransactionType, string> = {
   repayment_out: '还款扣款',
   repayment_in: '还款入账',
   installment_bill: '分期账单',
+  income: '收入',
 };
 
 interface TransactionFormData {
@@ -69,6 +70,7 @@ interface TransactionFormData {
   editScope: 'single' | 'plan';
   feeTotal: string;
   category: TransactionCategory;
+  expenseAttribute: ExpenseAttribute;
   note: string;
   isBudgeted: boolean;
   budgetId: string;
@@ -91,10 +93,18 @@ const EMPTY_FORM: TransactionFormData = {
   editScope: 'single',
   feeTotal: '0',
   category: '餐饮',
+  expenseAttribute: 'flexible_monthly',
   note: '',
   isBudgeted: false,
   budgetId: '',
 };
+
+const EXPENSE_ATTRIBUTE_OPTIONS: ExpenseAttribute[] = [
+  'rigid_fixed',
+  'flexible_monthly',
+  'annual_cycle',
+  'one_time_emergency',
+];
 
 export default function TransactionsPage() {
   const [transactions, setTransactions] = useState<ITransaction[]>([]);
@@ -240,6 +250,7 @@ export default function TransactionsPage() {
       editScope: txn.transactionType === 'installment_bill' ? 'plan' : 'single',
       feeTotal: '0',
       category: txn.category,
+      expenseAttribute: txn.expenseAttribute || 'flexible_monthly',
       note: txn.note.replace(/（第\s*\d+\/\d+\s*期）$/, ''),
       isBudgeted: txn.isBudgeted,
       budgetId: txn.budgetId || '',
@@ -346,6 +357,7 @@ export default function TransactionsPage() {
           accountId: form.accountId,
           amount,
           category: form.category,
+          expenseAttribute: shouldShowExpenseAttribute ? form.expenseAttribute : undefined,
           note: form.note,
           isBudgeted: form.isBudgeted,
           budgetId: form.isBudgeted ? form.budgetId : undefined,
@@ -362,6 +374,7 @@ export default function TransactionsPage() {
           accountId: form.accountId,
           amount,
           category: form.category,
+          expenseAttribute: shouldShowExpenseAttribute ? form.expenseAttribute : undefined,
           note: form.note,
           isBudgeted: form.isBudgeted,
           budgetId: form.isBudgeted ? form.budgetId : undefined,
@@ -415,6 +428,9 @@ export default function TransactionsPage() {
     const today = nowLocalISODate();
     return transactions.some((t) => t.installmentPlanId === editingMeta.installmentPlanId && t.date <= today);
   }, [editingMeta?.installmentPlanId, transactions]);
+
+  const shouldShowExpenseAttribute =
+    form.transactionType === 'installment_bill' || (form.transactionType === 'normal' && form.isExpense);
 
   const deleteInstallmentPlan = async () => {
     if (!editingId) return;
@@ -778,6 +794,13 @@ export default function TransactionsPage() {
                           <Badge variant="outline" className="text-xs">
                             {txn.category}
                           </Badge>
+                          {txn.expenseAttribute && (
+                            <div className="mt-1">
+                              <Badge variant="secondary" className="text-[11px]">
+                                {EXPENSE_ATTRIBUTE_LABELS[txn.expenseAttribute]}
+                              </Badge>
+                            </div>
+                          )}
                         </TableCell>
                         <TableCell className="whitespace-nowrap">
                           <Badge variant={txn.transactionType && txn.transactionType !== 'normal' ? 'secondary' : 'outline'} className="text-xs">
@@ -1061,6 +1084,30 @@ export default function TransactionsPage() {
                   </SelectContent>
                 </Select>
               </div>
+
+              {shouldShowExpenseAttribute && (
+                <div className="grid gap-1.5">
+                  <Label>支出属性</Label>
+                  <Select
+                    value={form.expenseAttribute}
+                    onValueChange={(v) => setForm({ ...form, expenseAttribute: v as ExpenseAttribute })}
+                  >
+                    <SelectTrigger>
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {EXPENSE_ATTRIBUTE_OPTIONS.map((option) => (
+                        <SelectItem key={option} value={option}>
+                          {EXPENSE_ATTRIBUTE_LABELS[option]}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <p className="text-xs text-muted-foreground">
+                    统计页会优先使用这里的显式标记，而不是再按分类自动推断。
+                  </p>
+                </div>
+              )}
 
               {/* Note */}
               <div className="grid gap-1.5">

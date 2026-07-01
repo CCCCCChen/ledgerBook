@@ -2,7 +2,7 @@
 // 提供与原有 storage 模块兼容的接口，底层调用后端 RESTful API
 
 import { api } from './client';
-import type { ITransaction, IBudget, IAccount, IPlannedExpense } from '@/types/finance';
+import type { ITransaction, IBudget, IAccount, IPlannedExpense, IIncomeBudget, IIncomeBudgetProjection } from '@/types/finance';
 
 export interface CreateTransactionInput extends Partial<ITransaction> {
   repaymentTargetAccountId?: string;
@@ -181,4 +181,16 @@ export const statisticsApi = {
     rate: number;
     severity: 'over' | 'warning' | 'normal';
   }>>('/api/statistics/over-budget-alerts'),
+};
+
+// ============================================================
+// 收入预算 API
+// ============================================================
+export const incomeBudgetsApi = {
+  list: () => api.get<IIncomeBudget[]>('/api/income-budgets'),
+  create: (data: Partial<IIncomeBudget>) => api.post<IIncomeBudget>('/api/income-budgets', data),
+  update: (id: string, data: Partial<IIncomeBudget>) => api.put<IIncomeBudget>(`/api/income-budgets/${id}`, data),
+  remove: (id: string) => api.delete<{ success: boolean }>(`/api/income-budgets/${id}`),
+  projection: (startDate: string, endDate: string) =>
+    api.get<IIncomeBudgetProjection[]>(`/api/income-budgets/projection?startDate=${startDate}&endDate=${endDate}`),
 };

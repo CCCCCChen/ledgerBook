@@ -1,6 +1,6 @@
 // EXPORTS: MOCK_TRANSACTIONS, MOCK_BUDGETS, MOCK_ACCOUNTS, MOCK_PLANNED_EXPENSES, DEFAULT_CATEGORIES, ACCOUNT_TYPE_LABELS, BUDGET_CYCLE_LABELS
 
-import type { ITransaction, IBudget, IAccount, IPlannedExpense, TransactionCategory, AccountType, BudgetCycleType } from '@/types/finance';
+import type { ITransaction, IBudget, IAccount, IPlannedExpense, TransactionCategory, AccountType, BudgetCycleType, ExpenseAttribute } from '@/types/finance';
 
 export const DEFAULT_CATEGORIES: TransactionCategory[] = ['餐饮', '购物', '交通', '娱乐', '住房', '其他'];
 
@@ -18,6 +18,13 @@ export const BUDGET_CYCLE_LABELS: Record<BudgetCycleType, string> = {
   monthly: '每月固定',
   yearly: '每年固定',
   custom: '自定义周期',
+};
+
+export const EXPENSE_ATTRIBUTE_LABELS: Record<ExpenseAttribute, string> = {
+  rigid_fixed: '刚性固定支出',
+  flexible_monthly: '弹性月度支出',
+  annual_cycle: '年度周期支出',
+  one_time_emergency: '一次性突发支出',
 };
 
 export const MOCK_ACCOUNTS: IAccount[] = [

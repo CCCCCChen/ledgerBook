@@ -257,3 +257,19 @@ export function listBudgetSettlementsForRange(
 export function isFutureTransaction(transaction: ITransaction, refDate = new Date()): boolean {
   return transaction.date > formatISODate(refDate);
 }
+
+export function getBillingCycleRange(billingDay: number, refDate: Date): { start: string; end: string } {
+  const y = refDate.getFullYear();
+  const m = refDate.getMonth();
+  let start = getSafeMonthDay(y, m, billingDay);
+  if (refDate < start) {
+    start = getSafeMonthDay(y, m - 1, billingDay);
+  }
+  const end = new Date(start);
+  end.setMonth(end.getMonth() + 1);
+  end.setDate(end.getDate() - 1);
+  return {
+    start: formatISODate(start),
+    end: formatISODate(end),
+  };
+}

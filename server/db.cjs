@@ -28,6 +28,7 @@ function migrateBudgetsTableIfNeeded() {
 
   if (!needsRecreate) {
     ensureColumn('budgets', 'cycle_days', 'INTEGER');
+    ensureColumn('budgets', 'tag', "TEXT CHECK(tag IN ('normal','long_term_over','over_budget','under_spent','reasonable'))");
     return;
   }
 
@@ -41,12 +42,13 @@ function migrateBudgetsTableIfNeeded() {
       end_date    TEXT,
       cycle_days  INTEGER,
       category    TEXT,
+      tag         TEXT CHECK(tag IN ('normal','long_term_over','over_budget','under_spent','reasonable')),
       created_at  TEXT NOT NULL DEFAULT (datetime('now')),
       updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
     );
 
-    INSERT INTO budgets_new (id, name, amount, cycle_type, start_date, end_date, cycle_days, category, created_at, updated_at)
-    SELECT id, name, amount, cycle_type, start_date, end_date, NULL, category, created_at, updated_at
+    INSERT INTO budgets_new (id, name, amount, cycle_type, start_date, end_date, cycle_days, category, tag, created_at, updated_at)
+    SELECT id, name, amount, cycle_type, start_date, end_date, NULL, category, NULL, created_at, updated_at
     FROM budgets;
 
     DROP TABLE budgets;
@@ -63,10 +65,17 @@ function migrateTransactionsTable() {
   ensureColumn('transactions', 'installment_total', 'INTEGER');
   ensureColumn('transactions', 'installment_fee', 'REAL');
   ensureColumn('transactions', 'cash_out_date', 'TEXT');
+  ensureColumn('transactions', 'expense_attribute', "TEXT CHECK(expense_attribute IN ('rigid_fixed','flexible_monthly','annual_cycle','one_time_emergency'))");
 }
 
 function migrateAccountsTable() {
   ensureColumn('accounts', 'repayment_day', 'INTEGER');
+  ensureColumn('accounts', 'total_debt', 'REAL');
+  ensureColumn('accounts', 'installment_total_periods', 'INTEGER');
+  ensureColumn('accounts', 'installment_remaining_periods', 'INTEGER');
+  ensureColumn('accounts', 'installment_monthly_payment', 'REAL');
+  ensureColumn('accounts', 'installment_total_interest', 'REAL');
+  ensureColumn('accounts', 'monthly_interest', 'REAL');
 }
 
 function migratePlannedExpensesTable() {
@@ -86,6 +95,26 @@ function migratePlannedExpensesTable() {
     );
   `);
   ensureColumn('planned_expenses', 'cash_out_date', 'TEXT');
+}
+
+function migrateIncomeBudgetsTable() {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS income_budgets (
+      id            TEXT PRIMARY KEY,
+      name          TEXT NOT NULL,
+      amount        REAL NOT NULL CHECK(amount > 0),
+      cycle_type    TEXT NOT NULL CHECK(cycle_type IN ('once','weekly','monthly','yearly','custom')),
+      expected_date TEXT NOT NULL,
+      account_id    TEXT,
+      cycle_days    INTEGER,
+      start_date    TEXT NOT NULL,
+      end_date      TEXT,
+      note          TEXT DEFAULT '',
+      created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+      FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL
+    );
+  `);
 }
 
 function backfillTransactionCashOutDates() {
@@ -258,6 +287,7 @@ function initDatabase(dbPathOrDir, allowRecovery = true) {
     migrateBudgetsTableIfNeeded();
     migrateTransactionsTable();
     migratePlannedExpensesTable();
+    migrateIncomeBudgetsTable();
     backfillTransactionCashOutDates();
     backfillPlannedExpenseCashOutDates();
 

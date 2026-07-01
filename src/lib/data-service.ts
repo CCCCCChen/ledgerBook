@@ -249,6 +249,7 @@ export async function createTransaction(data: CreateTransactionInput): Promise<I
       accountId: data.accountId,
       amount: -amount,
       category: '其他',
+      expenseAttribute: undefined,
       note: `${data.note || '信用账户还款'}（扣款）`,
       isBudgeted: false,
       transactionType: 'repayment_out',
@@ -264,6 +265,7 @@ export async function createTransaction(data: CreateTransactionInput): Promise<I
       accountId: data.transferAccountId,
       amount,
       category: '其他',
+      expenseAttribute: undefined,
       note: `${data.note || '信用账户还款'}（入账）`,
       isBudgeted: false,
       transactionType: 'repayment_in',
@@ -312,6 +314,7 @@ export async function createTransaction(data: CreateTransactionInput): Promise<I
         accountId: data.accountId || '',
         amount: -amount,
         category: data.category || '其他',
+        expenseAttribute: data.expenseAttribute,
         note: `${data.note || '分期账单'}（第 ${index + 1}/${installmentCount} 期）`,
         isBudgeted: data.isBudgeted || false,
         budgetId: data.budgetId,
@@ -349,6 +352,7 @@ export async function createTransaction(data: CreateTransactionInput): Promise<I
     accountId: data.accountId || '',
     amount: data.amount || 0,
     category: data.category || '其他',
+    expenseAttribute: data.amount != null && Number(data.amount) < 0 ? data.expenseAttribute : undefined,
     note: data.note || '',
     isBudgeted: data.isBudgeted || false,
     budgetId: data.budgetId,
@@ -387,6 +391,8 @@ export async function updateTransaction(id: string, data: UpdateTransactionInput
     const planId = txns[idx].installmentPlanId;
     const amount = data.amount != null ? Number(data.amount) : txns[idx].amount;
     const category = (data.category ?? txns[idx].category) as ITransaction['category'];
+    const expenseAttribute =
+      amount < 0 ? (data.expenseAttribute ?? txns[idx].expenseAttribute) : undefined;
     const isBudgeted = data.isBudgeted != null ? Boolean(data.isBudgeted) : txns[idx].isBudgeted;
     const budgetId = isBudgeted ? (data.budgetId ?? txns[idx].budgetId) : undefined;
     const now = new Date().toISOString();
@@ -407,6 +413,7 @@ export async function updateTransaction(id: string, data: UpdateTransactionInput
         }
         transaction.amount = amount;
         transaction.category = category;
+        transaction.expenseAttribute = expenseAttribute;
         transaction.note = suffix ? `${baseNote || '分期账单'}${suffix}` : baseNote || '分期账单';
         transaction.isBudgeted = isBudgeted;
         transaction.budgetId = budgetId;
@@ -424,6 +431,7 @@ export async function updateTransaction(id: string, data: UpdateTransactionInput
         date: data.date ?? txns[idx].date,
         amount,
         category,
+        expenseAttribute,
         note: suffix ? `${baseNote || '分期账单'}${suffix}` : baseNote || '分期账单',
         isBudgeted,
         budgetId,
@@ -447,6 +455,8 @@ export async function updateTransaction(id: string, data: UpdateTransactionInput
   const nextTxn = { ...txns[idx], ...data };
   txns[idx] = {
     ...nextTxn,
+    expenseAttribute:
+      Number(nextTxn.amount) < 0 ? nextTxn.expenseAttribute : undefined,
     cashOutDate: resolveTransactionCashOutDate(nextTxn, accountMap.get(nextTxn.accountId)) || undefined,
     updatedAt: new Date().toISOString(),
   };

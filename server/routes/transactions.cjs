@@ -40,6 +40,7 @@ function buildRepaymentTransactions(payload) {
       accountId: payload.accountId,
       amount: -amount,
       category: '其他',
+      expenseAttribute: null,
       note: `${baseNote}（扣款）`,
       isBudgeted: false,
       budgetId: null,
@@ -60,6 +61,7 @@ function buildRepaymentTransactions(payload) {
       accountId: payload.repaymentTargetAccountId,
       amount,
       category: '其他',
+      expenseAttribute: null,
       note: `${baseNote}（入账）`,
       isBudgeted: false,
       budgetId: null,
@@ -98,6 +100,7 @@ function buildInstallmentTransactions(payload) {
       accountId: payload.accountId,
       amount: -amount,
       category: payload.category,
+      expenseAttribute: payload.expenseAttribute || null,
       note: `${payload.note || '分期账单'}（第 ${index + 1}/${installmentCount} 期）`,
       isBudgeted: Boolean(payload.isBudgeted),
       budgetId: payload.isBudgeted && payload.budgetId ? payload.budgetId : null,
@@ -125,6 +128,7 @@ function buildNormalTransaction(payload) {
     accountId: payload.accountId,
     amount: Number(payload.amount),
     category: payload.category,
+    expenseAttribute: payload.expenseAttribute || null,
     note: payload.note || '',
     isBudgeted: Boolean(payload.isBudgeted),
     budgetId: payload.isBudgeted && payload.budgetId ? payload.budgetId : null,
@@ -160,10 +164,10 @@ function insertTransactions(db, items) {
   applyCashOutDates(db, items);
   const stmt = db.prepare(`
     INSERT INTO transactions (
-      id, date, account_id, amount, category, note, is_budgeted, budget_id,
+      id, date, account_id, amount, category, expense_attribute, note, is_budgeted, budget_id,
       transaction_type, transfer_account_id, paired_transaction_id,
       installment_plan_id, installment_index, installment_total, installment_fee, cash_out_date, created_at, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   const insertMany = db.transaction((rows) => {
     rows.forEach((row) => {
@@ -173,6 +177,7 @@ function insertTransactions(db, items) {
         row.accountId,
         row.amount,
         row.category,
+        row.expenseAttribute,
         row.note,
         row.isBudgeted ? 1 : 0,
         row.budgetId,
@@ -262,6 +267,7 @@ router.post('/', (req, res) => {
       note,
       isBudgeted,
       budgetId,
+      expenseAttribute,
       transactionType = 'normal',
       repaymentTargetAccountId,
       installmentCount,
@@ -294,6 +300,7 @@ router.post('/', (req, res) => {
         amount,
         category,
         note,
+        expenseAttribute,
         isBudgeted,
         budgetId,
         installmentCount,
@@ -306,6 +313,7 @@ router.post('/', (req, res) => {
         amount,
         category,
         note,
+        expenseAttribute,
         isBudgeted,
         budgetId,
         transactionType,
@@ -334,6 +342,7 @@ router.put('/:id', (req, res) => {
 
     const now = new Date().toISOString();
     const { date, accountId, amount, category, note, isBudgeted, budgetId, editScope = 'single' } = req.body;
+    const { expenseAttribute } = req.body;
 
     if (existing.transaction_type === 'repayment_out' || existing.transaction_type === 'repayment_in') {
       return res.status(400).json({ success: false, message: '还款联动记录暂不支持编辑，请删除后重新创建' });
@@ -342,6 +351,7 @@ router.put('/:id', (req, res) => {
     if (existing.transaction_type === 'installment_bill') {
       const nextAmount = amount != null ? Number(amount) : existing.amount;
       const nextCategory = category ?? existing.category;
+      const nextExpenseAttribute = amount != null && Number(amount) < 0 ? (expenseAttribute ?? existing.expense_attribute) : null;
       const nextIsBudgeted = isBudgeted != null ? (isBudgeted ? 1 : 0) : existing.is_budgeted;
       const nextBudgetId = isBudgeted != null ? (isBudgeted && budgetId ? budgetId : null) : existing.budget_id;
 
@@ -355,7 +365,7 @@ router.put('/:id', (req, res) => {
 
         const updateStmt = db.prepare(`
           UPDATE transactions
-          SET date = ?, amount = ?, category = ?, note = ?, is_budgeted = ?, budget_id = ?, cash_out_date = ?, updated_at = ?
+          SET date = ?, amount = ?, category = ?, expense_attribute = ?, note = ?, is_budgeted = ?, budget_id = ?, cash_out_date = ?, updated_at = ?
           WHERE id = ?
         `);
 
@@ -377,7 +387,7 @@ router.put('/:id', (req, res) => {
               },
               accountRow,
             ) || null;
-            updateStmt.run(nextDate, nextAmount, nextCategory, noteWithSuffix, nextIsBudgeted, nextBudgetId, nextCashOutDate, now, row.id);
+            updateStmt.run(nextDate, nextAmount, nextCategory, nextExpenseAttribute, noteWithSuffix, nextIsBudgeted, nextBudgetId, nextCashOutDate, now, row.id);
           });
         });
         tx();
@@ -398,12 +408,13 @@ router.put('/:id', (req, res) => {
         ) || null;
         db.prepare(`
           UPDATE transactions
-          SET date = ?, amount = ?, category = ?, note = ?, is_budgeted = ?, budget_id = ?, cash_out_date = ?, updated_at = ?
+          SET date = ?, amount = ?, category = ?, expense_attribute = ?, note = ?, is_budgeted = ?, budget_id = ?, cash_out_date = ?, updated_at = ?
           WHERE id = ?
         `).run(
           nextDate,
           nextAmount,
           nextCategory,
+          nextExpenseAttribute,
           noteWithSuffix,
           nextIsBudgeted,
           nextBudgetId,
@@ -424,6 +435,7 @@ router.put('/:id', (req, res) => {
     const nextDate = date ?? existing.date;
     const nextAccountId = accountId ?? existing.account_id;
     const nextAmount = amount != null ? Number(amount) : existing.amount;
+    const nextExpenseAttribute = nextAmount < 0 ? (expenseAttribute ?? existing.expense_attribute) : null;
     const nextCashOutDate = resolveTransactionCashOutDate(
       {
         date: nextDate,
@@ -437,7 +449,7 @@ router.put('/:id', (req, res) => {
     ) || null;
     db.prepare(`
       UPDATE transactions
-      SET date = ?, account_id = ?, amount = ?, category = ?, note = ?,
+      SET date = ?, account_id = ?, amount = ?, category = ?, expense_attribute = ?, note = ?,
           is_budgeted = ?, budget_id = ?, transaction_type = ?, cash_out_date = ?, updated_at = ?
       WHERE id = ?
     `).run(
@@ -445,6 +457,7 @@ router.put('/:id', (req, res) => {
       nextAccountId,
       nextAmount,
       category ?? existing.category,
+      nextExpenseAttribute,
       note ?? existing.note,
       isBudgeted != null ? (isBudgeted ? 1 : 0) : existing.is_budgeted,
       isBudgeted != null ? (isBudgeted && budgetId ? budgetId : null) : existing.budget_id,
@@ -506,6 +519,7 @@ function mapTransaction(row) {
     accountId: row.account_id,
     amount: row.amount,
     category: row.category,
+    expenseAttribute: row.expense_attribute || undefined,
     note: row.note || '',
     isBudgeted: row.is_budgeted === 1,
     budgetId: row.budget_id || undefined,

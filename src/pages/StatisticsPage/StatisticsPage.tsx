@@ -1,5 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useMemo, useEffect } from 'react';
 import ReactECharts from 'echarts-for-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -7,122 +6,54 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
-import { AlertTriangle, TrendingUp } from 'lucide-react';
+import { AlertTriangle, TrendingUp, Wallet, CreditCard, PieChart, BarChart3 } from 'lucide-react';
 import { CHART_COLORS } from '@/lib/chart-colors';
-import { ACCOUNT_TYPE_LABELS } from '@/data/finance';
-import type { ITransaction, IBudget, IAccount } from '@/types/finance';
+import { DEFAULT_CATEGORIES, EXPENSE_ATTRIBUTE_LABELS } from '@/data/finance';
+import type { ITransaction, IAccount, ExpenseAttribute } from '@/types/finance';
 import { loadAccounts, loadBudgets, loadTransactions } from '@/lib/data-service';
-import { listBudgetSettlementsForRange } from '@/lib/finance-utils';
 import { formatLocalISODate, formatLocalISOYearMonth } from '@/lib/date';
-import type { BudgetWithStats } from '@/api';
 import { getEffectiveTransactionDate } from '@/lib/cashflow';
 
-type TimeGranularity = 'daily' | 'weekly' | 'monthly';
+type StatsPeriod = 'month' | 'quarter' | 'halfyear' | 'year';
+const PERIOD_LABELS: Record<StatsPeriod, string> = {
+  month: '本月',
+  quarter: '近3月',
+  halfyear: '半年',
+  year: '全年',
+};
+
 type TimelineMode = 'expense' | 'cashflow';
-type WeeklyBudgetNormalizeMode = 'weeks4' | 'days';
+type ForecastScenario = 'optimistic' | 'baseline' | 'conservative';
 
-interface FutureExpenseItem {
-  id: string;
-  type: 'installment' | 'future' | 'budget';
-  title: string;
-  date: string;
-  amount: number;
-  accountId: string;
-  originalDate?: string;
-}
-
-function getWeekStart(date: Date): string {
-  const d = new Date(date);
-  const day = d.getDay();
-  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
-  d.setDate(diff);
-  return formatLocalISODate(d);
-}
-
-function getMonthKey(date: Date): string {
-  return formatLocalISOYearMonth(date);
-}
-
-function parseISODate(date: string): Date {
-  return new Date(`${date}T00:00:00`);
-}
-
-function addDays(date: Date, days: number): Date {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
-}
-
-function diffDaysInclusive(fromISO: string, toISO: string): number {
-  const from = parseISODate(fromISO);
-  const to = parseISODate(toISO);
-  const ms = to.getTime() - from.getTime();
-  return Math.floor(ms / 86400000) + 1;
-}
-
-function getMonthBounds(dateISO: string): { monthStart: string; monthEnd: string; daysInMonth: number } {
-  const d = parseISODate(dateISO);
-  const start = new Date(d.getFullYear(), d.getMonth(), 1);
-  const end = new Date(d.getFullYear(), d.getMonth() + 1, 0);
-  return {
-    monthStart: formatLocalISODate(start),
-    monthEnd: formatLocalISODate(end),
-    daysInMonth: end.getDate(),
-  };
-}
-
-function isFullNaturalMonthRange(rangeFrom: string, rangeTo: string): boolean {
-  const fromBounds = getMonthBounds(rangeFrom);
-  const toBounds = getMonthBounds(rangeTo);
-  return (
-    fromBounds.monthStart === rangeFrom &&
-    fromBounds.monthEnd === rangeTo &&
-    fromBounds.monthStart === toBounds.monthStart
-  );
-}
-
-function getBillingCycleRange(billingDay: number, refDate: Date): { start: string; end: string } {
-  const y = refDate.getFullYear();
-  const m = refDate.getMonth();
-  const start = new Date(y, m, billingDay);
-  if (refDate < start) {
-    start.setMonth(m - 1);
-  }
-  const end = new Date(start);
-  end.setMonth(end.getMonth() + 1);
-  end.setDate(end.getDate() - 1);
-  return {
-    start: formatLocalISODate(start),
-    end: formatLocalISODate(end),
-  };
+interface BudgetItem {
+  category: string;
+  budgetAmount: number;
+  actualAmount: number;
+  status: 'normal' | 'over' | 'under';
 }
 
 export default function StatisticsPage() {
-  const navigate = useNavigate();
   const [transactions, setTransactions] = useState<ITransaction[]>([]);
-  const [budgets, setBudgets] = useState<BudgetWithStats[]>([]);
+  const [budgets, setBudgets] = useState<any[]>([]);
   const [accounts, setAccounts] = useState<IAccount[]>([]);
-  const [timeGranularity, setTimeGranularity] = useState<TimeGranularity>('daily');
   const [timelineMode, setTimelineMode] = useState<TimelineMode>('expense');
-  const [includeBudgetSettlement, setIncludeBudgetSettlement] = useState(true);
-  const [weeklyBudgetNormalizeMode, setWeeklyBudgetNormalizeMode] = useState<WeeklyBudgetNormalizeMode>('weeks4');
-  const today = new Date();
-  const todayISO = formatLocalISODate(today);
-  const monthStartISO = formatLocalISODate(new Date(today.getFullYear(), today.getMonth(), 1));
-  const monthEndISO = formatLocalISODate(new Date(today.getFullYear(), today.getMonth() + 1, 0));
-  const [rangeFrom, setRangeFrom] = useState(monthStartISO);
-  const [rangeTo, setRangeTo] = useState(monthEndISO);
+  const [selectedPeriod, setSelectedPeriod] = useState<StatsPeriod>('month');
+  const [rangeFrom, setRangeFrom] = useState<string>('');
+  const [rangeTo, setRangeTo] = useState<string>('');
 
+  // 初始化日期范围
   useEffect(() => {
-    if (rangeFrom && rangeTo && rangeFrom > rangeTo) {
-      setRangeTo(rangeFrom);
-    }
-  }, [rangeFrom, rangeTo]);
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+    setRangeFrom(formatLocalISODate(monthStart));
+    setRangeTo(formatLocalISODate(monthEnd));
+  }, []);
 
+  // 加载数据
   useEffect(() => {
-    (async () => {
+    const loadData = async () => {
       const [txns, bdgs, accts] = await Promise.all([
         loadTransactions(),
         loadBudgets(),
@@ -131,365 +62,532 @@ export default function StatisticsPage() {
       setTransactions(txns);
       setBudgets(bdgs);
       setAccounts(accts);
-    })().catch(() => {});
+    };
+    loadData();
   }, []);
 
-  const filteredTransactions = useMemo(
-    () =>
-      transactions
-        .map((transaction) => ({
-          ...transaction,
-          effectiveDate: getEffectiveTransactionDate(transaction, timelineMode),
-        }))
-        .filter((transaction) => transaction.effectiveDate >= rangeFrom && transaction.effectiveDate <= rangeTo),
-    [transactions, rangeFrom, rangeTo, timelineMode],
-  );
-
-  const actualCutoff = useMemo(() => (todayISO < rangeTo ? todayISO : rangeTo), [todayISO, rangeTo]);
-
-  const actualTransactions = useMemo(
-    () => filteredTransactions.filter((transaction) => transaction.effectiveDate <= actualCutoff),
-    [filteredTransactions, actualCutoff],
-  );
-
-  const actualExpenses = useMemo(
-    () => actualTransactions.filter((t) => t.amount < 0).map((t) => ({ ...t, amount: Math.abs(t.amount) })),
-    [actualTransactions],
-  );
-
-  const futureFrom = useMemo(() => (todayISO > rangeFrom ? todayISO : rangeFrom), [todayISO, rangeFrom]);
-  const futureExpenseTransactions = useMemo(() => {
-    if (rangeTo < futureFrom) return [];
-    return filteredTransactions
-      .filter((transaction) => transaction.amount < 0 && transaction.effectiveDate > actualCutoff && transaction.effectiveDate >= futureFrom)
-      .map((transaction) => ({ ...transaction, amount: Math.abs(transaction.amount) }));
-  }, [filteredTransactions, actualCutoff, futureFrom, rangeTo]);
-
-  const budgetSettlementItems = useMemo(
-    () =>
-      listBudgetSettlementsForRange(budgets, transactions, rangeFrom, rangeTo)
-        .filter((item) => item.expectedAmount > 0)
-        .filter((item) => item.cycleEnd >= futureFrom),
-    [budgets, transactions, rangeFrom, rangeTo, futureFrom],
-  );
-
-  const shiftedTransactions = useMemo(
-    () =>
-      transactions
-        .filter((transaction) => transaction.amount < 0)
-        .filter((transaction) => transaction.cashOutDate && transaction.cashOutDate !== transaction.date)
-        .sort((a, b) => (a.cashOutDate || '').localeCompare(b.cashOutDate || '')),
-    [transactions],
-  );
-
-  const futureExpenseItems = useMemo<FutureExpenseItem[]>(() => {
-    const transactionItems: FutureExpenseItem[] = futureExpenseTransactions.map((transaction) => ({
-      id: transaction.id,
-      type: transaction.transactionType === 'installment_bill' ? 'installment' : 'future',
-      title: transaction.note || '未来支出',
-      date: transaction.effectiveDate,
-      amount: transaction.amount,
-      accountId: transaction.accountId,
-      originalDate: transaction.date,
-    }));
-    const budgetItems: FutureExpenseItem[] = includeBudgetSettlement
-      ? budgetSettlementItems.map((item) => ({
-          id: `budget-${item.budgetId}-${item.cycleEnd}`,
-          type: 'budget',
-          title: `${item.budgetName} 预算结算`,
-          date: item.cycleEnd,
-          amount: item.expectedAmount,
-          accountId: '',
-        }))
-      : [];
-    return [...transactionItems, ...budgetItems].sort((a, b) => a.date.localeCompare(b.date));
-  }, [futureExpenseTransactions, includeBudgetSettlement, budgetSettlementItems]);
-
-  // ---- 超支预警 ----
-  const overBudgetAlerts = useMemo(() => {
-    return budgets
-      .filter((budget) => budget.rate >= 80)
-      .sort((a, b) => b.rate - a.rate);
-  }, [budgets]);
-
-  // ---- 账单周期统计 ----
-  const billingCycleOption = useMemo(() => {
-    const billingAccounts = accounts.filter(
-      (a) => (a.type === 'credit_card' || a.type === 'alipay_huabei') && a.billingDay,
-    );
-    if (billingAccounts.length === 0) return null;
-
+  // 辅助函数：计算日期范围
+  const getDateRange = (period: StatsPeriod) => {
     const now = new Date();
-    const names: string[] = [];
-    const values: number[] = [];
+    let start, end;
+    switch (period) {
+      case 'month':
+        start = new Date(now.getFullYear(), now.getMonth(), 1);
+        end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        break;
+      case 'quarter':
+        start = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
+        end = new Date(start.getFullYear(), start.getMonth() + 3, 0);
+        break;
+      case 'halfyear':
+        start = new Date(now.getFullYear(), now.getMonth() - 5, 1);
+        end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        break;
+      case 'year':
+        start = new Date(now.getFullYear(), 0, 1);
+        end = new Date(now.getFullYear(), 11, 31);
+        break;
+    }
+    return { rangeFrom: formatLocalISODate(start), rangeTo: formatLocalISODate(end) };
+  };
 
-    billingAccounts.forEach((acc) => {
-      const { start, end } = getBillingCycleRange(acc.billingDay!, now);
-      const total = actualExpenses
-        .filter((t) => t.accountId === acc.id && t.date >= start && t.date <= end)
-        .reduce((sum, t) => sum + t.amount, 0);
-      names.push(acc.name);
-      values.push(total);
+  // 自动设置日期范围
+  useEffect(() => {
+    const { rangeFrom: from, rangeTo: to } = getDateRange(selectedPeriod);
+    setRangeFrom(from);
+    setRangeTo(to);
+  }, [selectedPeriod]);
+
+  // 筛选交易
+  const filteredTransactions = useMemo(() => {
+    if (!rangeFrom || !rangeTo) return [];
+    return transactions.filter((txn) => {
+      const date = getEffectiveTransactionDate(txn, timelineMode);
+      return date >= rangeFrom && date <= rangeTo;
+    });
+  }, [transactions, rangeFrom, rangeTo, timelineMode]);
+
+  // ==========================================
+  // 1. 财务状态概览
+  // ==========================================
+  const financialOverview = useMemo(() => {
+    const income = filteredTransactions
+      .filter((txn) => txn.amount > 0)
+      .reduce((sum, txn) => sum + txn.amount, 0);
+    
+    const expenses = filteredTransactions
+      .filter((txn) => txn.amount < 0)
+      .reduce((sum, txn) => sum + Math.abs(txn.amount), 0);
+    
+    const savingRate = income > 0 ? Math.max(0, Math.min(100, ((income - expenses) / income) * 100)) : 0;
+
+    // 支出属性拆分
+    const rigidExpenses = filteredTransactions
+      .filter((txn) => txn.amount < 0 && inferExpenseAttribute(txn) === 'rigid_fixed')
+      .reduce((sum, txn) => sum + Math.abs(txn.amount), 0);
+    const flexibleExpenses = filteredTransactions
+      .filter((txn) => txn.amount < 0 && inferExpenseAttribute(txn) === 'flexible_monthly')
+      .reduce((sum, txn) => sum + Math.abs(txn.amount), 0);
+    
+    // 现金安全月数（估算：假设账户总余额 / 月均支出）
+    const accountBalances = accounts.reduce((sum, acc) => sum + (acc.totalDebt || 0), 0);
+    const monthlyAverageExpense = expenses; // 简化处理
+    const cashSafetyMonths = monthlyAverageExpense > 0 ? Math.max(0, accountBalances / monthlyAverageExpense) : 0;
+
+    // 负债压力
+    const creditAccounts = accounts.filter((acc) => acc.type === 'credit_card' || acc.type === 'alipay_huabei');
+    const totalDebt = creditAccounts.reduce((sum, acc) => sum + (acc.totalDebt || 0), 0);
+    const monthlyRepayment = creditAccounts.reduce((sum, acc) => sum + (acc.installmentMonthlyPayment || 0), 0);
+    const debtPressure = income > 0 ? Math.round((monthlyRepayment / income) * 100) : 0;
+
+    // 预算状态
+    const budgetStatus = (() => {
+      const overBudgets = budgets.filter((b) => (b.used || 0) > b.amount);
+      if (overBudgets.length > 0) return '超支';
+      return '正常';
+    })();
+
+    return {
+      income,
+      expenses,
+      savingRate: Math.round(savingRate),
+      rigidExpenses,
+      flexibleExpenses,
+      cashSafetyMonths: Math.round(cashSafetyMonths * 10) / 10,
+      totalDebt,
+      debtPressure,
+      budgetStatus,
+    };
+  }, [filteredTransactions, accounts, budgets]);
+
+  // ==========================================
+  // 2. 预算执行分析
+  // ==========================================
+  const budgetAnalysis = useMemo<BudgetItem[]>(() => {
+    const results: BudgetItem[] = [];
+    
+    DEFAULT_CATEGORIES.forEach((category) => {
+      const budget = budgets.find((b) => b.category === category);
+      const budgetAmount = budget?.amount || 0;
+      const actualAmount = filteredTransactions
+        .filter((txn) => txn.amount < 0 && txn.category === category)
+        .reduce((sum, txn) => sum + Math.abs(txn.amount), 0);
+      
+      let status: BudgetItem['status'] = 'normal';
+      if (budgetAmount > 0) {
+        if (actualAmount > budgetAmount * 1.05) status = 'over';
+        else if (actualAmount < budgetAmount * 0.7) status = 'under';
+      }
+
+      if (budgetAmount > 0 || actualAmount > 0) {
+        results.push({ category, budgetAmount, actualAmount, status });
+      }
+    });
+
+    return results.sort((a, b) => b.actualAmount - a.actualAmount);
+  }, [filteredTransactions, budgets]);
+
+  const budgetSuggestions = useMemo(() => {
+    const suggestions: { category: string; suggestion: string }[] = [];
+    budgetAnalysis.forEach((item) => {
+      if (item.status === 'over') {
+        suggestions.push({
+          category: item.category,
+          suggestion: `连续超支，建议将预算从 ¥${item.budgetAmount.toFixed(0)} 调整到约 ¥${Math.round(item.actualAmount * 1.05).toFixed(0)}`,
+        });
+      } else if (item.status === 'under' && item.budgetAmount > 0) {
+        suggestions.push({
+          category: item.category,
+          suggestion: `预算过多，可考虑下调至约 ¥${Math.round(item.actualAmount * 1.1).toFixed(0)}`,
+        });
+      }
+    });
+    return suggestions;
+  }, [budgetAnalysis]);
+
+  // ==========================================
+  // 3. 未来现金流模拟（简单版）
+  // ==========================================
+  const futureCashFlow = useMemo(() => {
+    const monthKeys = [];
+    const now = new Date();
+    for (let i = 1; i <= 6; i++) {
+      const date = new Date(now.getFullYear(), now.getMonth() + i, 1);
+      monthKeys.push({
+        monthKey: formatLocalISOYearMonth(date),
+        label: formatLocalISOYearMonth(date),
+      });
+    }
+
+    const baselineIncome = Math.max(0, financialOverview.income);
+    const baselineExpenses = Math.max(0, financialOverview.expenses);
+    const baselineSavings = Math.max(0, baselineIncome - baselineExpenses);
+
+    return monthKeys.map((m, i) => {
+      const factor = 1 + i * 0.02; // 简单通胀假设
+      const baseline = Math.round(baselineIncome - baselineExpenses * factor);
+      const optimistic = Math.round(baseline * 1.1);
+      const conservative = Math.round(baseline * 0.9);
+      return {
+        ...m,
+        income: Math.round(baselineIncome),
+        expenses: Math.round(baselineExpenses * factor),
+        optimistic,
+        baseline: Math.max(0, baseline),
+        conservative: Math.max(0, conservative),
+      };
+    });
+  }, [financialOverview]);
+
+  // ==========================================
+  // 4. 预警中心
+  // ==========================================
+  const alerts = useMemo(() => {
+    const items: { title: string; description: string; severity: 'high' | 'medium' | 'low' }[] = [];
+
+    // 1. 负债压力
+    if (financialOverview.debtPressure > 30) {
+      items.push({
+        title: '信用卡还款压力大',
+        description: `下月还款预计占收入 ${financialOverview.debtPressure}%`,
+        severity: 'high',
+      });
+    } else if (financialOverview.debtPressure > 20) {
+      items.push({
+        title: '信用卡还款压力上升',
+        description: `下月还款预计占收入 ${financialOverview.debtPressure}%`,
+        severity: 'medium',
+      });
+    }
+
+    // 2. 预算超支
+    budgetAnalysis.filter((b) => b.status === 'over').forEach((item) => {
+      items.push({
+        title: `${item.category} 超预算`,
+        description: `已花费 ¥${item.actualAmount.toFixed(0)} / 预算 ¥${item.budgetAmount.toFixed(0)}`,
+        severity: 'medium',
+      });
+    });
+
+    // 3. 大额支出识别
+    const largeExpenses = filteredTransactions
+      .filter((txn) => Math.abs(txn.amount) > 2000)
+      .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
+    if (largeExpenses.length > 0) {
+      largeExpenses.slice(0, 3).forEach((txn) => {
+        items.push({
+          title: '大额支出提醒',
+          description: `${txn.date} 在 ${txn.category} 花费 ¥${Math.abs(txn.amount).toFixed(0)}`,
+          severity: 'medium',
+        });
+      });
+    }
+
+    // 4. 储蓄率
+    if (financialOverview.savingRate < 10) {
+      items.push({
+        title: '储蓄率偏低',
+        description: `当前仅为 ${financialOverview.savingRate}%，建议保持在 20% 以上`,
+        severity: 'low',
+      });
+    }
+
+    return items;
+  }, [financialOverview, budgetAnalysis, filteredTransactions]);
+
+  // ==========================================
+  // 5. 财务趋势图
+  // ==========================================
+  const trendChartOption = useMemo(() => {
+    const months = [];
+    const now = new Date();
+    for (let i = 5; i >= 0; i--) {
+      months.push(new Date(now.getFullYear(), now.getMonth() - i, 1));
+    }
+
+    const incomeData: number[] = [];
+    const expenseData: number[] = [];
+    const savingData: number[] = [];
+    const monthlyTransactions: { monthKey: string; txns: ITransaction[] }[] = [];
+
+    months.forEach((month) => {
+      const monthStart = formatLocalISODate(new Date(month.getFullYear(), month.getMonth(), 1));
+      const monthEnd = formatLocalISODate(new Date(month.getFullYear(), month.getMonth() + 1, 0));
+      const txnsInMonth = transactions.filter((txn) => txn.date >= monthStart && txn.date <= monthEnd);
+      
+      const income = txnsInMonth.filter((txn) => txn.amount > 0).reduce((sum, txn) => sum + txn.amount, 0);
+      const expense = txnsInMonth.filter((txn) => txn.amount < 0).reduce((sum, txn) => sum + Math.abs(txn.amount), 0);
+      incomeData.push(Math.round(income));
+      expenseData.push(Math.round(expense));
+      savingData.push(Math.round(income - expense));
+      
+      monthlyTransactions.push({
+        monthKey: formatLocalISOYearMonth(month),
+        txns: txnsInMonth,
+      });
     });
 
     return {
-      tooltip: { trigger: 'axis' },
-      grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-      xAxis: { type: 'category', data: names, axisLabel: { rotate: 20 } },
-      yAxis: { type: 'value', name: '支出 (元)' },
+      tooltip: {
+        trigger: 'axis',
+        formatter: (params: any) => {
+          if (!params || params.length === 0) return '';
+          
+          const monthKey = params[0].axisValue;
+          const monthData = monthlyTransactions.find(m => m.monthKey === monthKey);
+          
+          let result = `<strong>${monthKey}</strong><br/>`;
+          
+          params.forEach((param: any) => {
+            result += `${param.marker} ${param.seriesName}: ¥${param.value.toLocaleString()}<br/>`;
+          });
+          
+          if (monthData && monthData.txns.length > 0) {
+            result += `<br/><strong>详细记录（${monthData.txns.length}笔）：</strong><br/>`;
+            
+            // 显示最近几笔记录
+            const recentTxns = monthData.txns.slice(-5).reverse();
+            recentTxns.forEach((txn, idx) => {
+              const sign = txn.amount > 0 ? '+' : '';
+              const color = txn.amount > 0 ? 'color: #52c41a' : 'color: #ff4d4f';
+              result += `<span style="${color}">${sign}¥${Math.abs(txn.amount).toLocaleString()}</span> - ${txn.category}<br/>`;
+            });
+            
+            if (monthData.txns.length > 5) {
+              result += `...还有 ${monthData.txns.length - 5} 笔记录`;
+            }
+          }
+          
+          return result;
+        },
+        enterable: true,
+        hideDelay: 1000,
+      },
+      legend: { data: ['收入', '支出', '储蓄'], bottom: 0 },
+      grid: { left: '3%', right: '4%', bottom: '15%', top: '10%', containLabel: true },
+      xAxis: {
+        type: 'category',
+        data: months.map((m) => formatLocalISOYearMonth(m)),
+      },
+      yAxis: {
+        type: 'value',
+        name: '金额',
+      },
+      series: [
+        { name: '收入', type: 'line', data: incomeData, smooth: true, itemStyle: { color: CHART_COLORS[0] } },
+        { name: '支出', type: 'line', data: expenseData, smooth: true, itemStyle: { color: '#E54848' } },
+        { name: '储蓄', type: 'line', data: savingData, smooth: true, itemStyle: { color: CHART_COLORS[1] } },
+      ],
+    };
+  }, [transactions]);
+
+  // ==========================================
+  // 6. 分类支出分布（饼图）
+  // ==========================================
+  const categoryPieChartOption = useMemo(() => {
+    const categoryTotals = new Map<string, number>();
+    
+    filteredTransactions
+      .filter(txn => txn.amount < 0)
+      .forEach(txn => {
+        const current = categoryTotals.get(txn.category) || 0;
+        categoryTotals.set(txn.category, current + Math.abs(txn.amount));
+      });
+
+    const pieData = Array.from(categoryTotals.entries())
+      .map(([category, amount]) => ({
+        name: category,
+        value: Math.round(amount),
+      }))
+      .sort((a, b) => b.value - a.value);
+
+    const categoryTxnsMap = new Map<string, ITransaction[]>();
+    filteredTransactions
+      .filter(txn => txn.amount < 0)
+      .forEach(txn => {
+        if (!categoryTxnsMap.has(txn.category)) {
+          categoryTxnsMap.set(txn.category, []);
+        }
+        categoryTxnsMap.get(txn.category)!.push(txn);
+      });
+
+    return {
+      tooltip: {
+        trigger: 'item',
+        formatter: (params: any) => {
+          const category = params.name;
+          const txns = categoryTxnsMap.get(category) || [];
+          
+          let result = `<strong>${category}</strong><br/>`;
+          result += `金额：¥${params.value.toLocaleString()}<br/>`;
+          result += `占比：${params.percent}%<br/>`;
+          
+          if (txns.length > 0) {
+            result += `<br/><strong>该分类记录（${txns.length}笔）：</strong><br/>`;
+            const sortedTxns = [...txns].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
+            sortedTxns.slice(0, 5).forEach(txn => {
+              result += `¥${Math.abs(txn.amount).toLocaleString()} - ${txn.date}<br/>`;
+            });
+            if (txns.length > 5) {
+              result += `...还有 ${txns.length - 5} 笔记录`;
+            }
+          }
+          
+          return result;
+        },
+        enterable: true,
+        hideDelay: 1000,
+      },
+      legend: {
+        orient: 'vertical',
+        right: '10%',
+        top: 'center',
+      },
       series: [
         {
-          name: '本期账单支出',
-          type: 'bar',
-          data: values,
+          name: '支出分布',
+          type: 'pie',
+          radius: ['40%', '70%'],
+          center: ['35%', '50%'],
+          avoidLabelOverlap: false,
           itemStyle: {
-            color: CHART_COLORS[0],
+            borderRadius: 10,
+            borderColor: '#fff',
+            borderWidth: 2,
+          },
+          label: {
+            show: false,
+            position: 'center',
+          },
+          emphasis: {
+            label: {
+              show: true,
+              fontSize: 20,
+              fontWeight: 'bold',
+            },
+          },
+          labelLine: {
+            show: false,
+          },
+          data: pieData,
+        },
+      ],
+    };
+  }, [filteredTransactions]);
+
+  // ==========================================
+  // 7. 账户支出对比（柱状图）
+  // ==========================================
+  const accountBarChartOption = useMemo(() => {
+    const accountTotals = new Map<string, number>();
+    
+    filteredTransactions
+      .filter(txn => txn.amount < 0)
+      .forEach(txn => {
+        const accountName = accounts.find(a => a.id === txn.accountId)?.name || '未知账户';
+        const current = accountTotals.get(accountName) || 0;
+        accountTotals.set(accountName, current + Math.abs(txn.amount));
+      });
+
+    const barData = Array.from(accountTotals.entries())
+      .map(([account, amount]) => ({
+        name: account,
+        value: Math.round(amount),
+      }))
+      .sort((a, b) => b.value - a.value);
+
+    const accountTxnsMap = new Map<string, ITransaction[]>();
+    filteredTransactions
+      .filter(txn => txn.amount < 0)
+      .forEach(txn => {
+        const accountName = accounts.find(a => a.id === txn.accountId)?.name || '未知账户';
+        if (!accountTxnsMap.has(accountName)) {
+          accountTxnsMap.set(accountName, []);
+        }
+        accountTxnsMap.get(accountName)!.push(txn);
+      });
+
+    return {
+      tooltip: {
+        trigger: 'axis',
+        axisPointer: {
+          type: 'shadow',
+        },
+        formatter: (params: any) => {
+          if (!params || params.length === 0) return '';
+          
+          const accountName = params[0].name;
+          const txns = accountTxnsMap.get(accountName) || [];
+          
+          let result = `<strong>${accountName}</strong><br/>`;
+          result += `支出总额：¥${params[0].value.toLocaleString()}<br/>`;
+          
+          if (txns.length > 0) {
+            result += `<br/><strong>该账户记录（${txns.length}笔）：</strong><br/>`;
+            const sortedTxns = [...txns].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
+            sortedTxns.slice(0, 5).forEach(txn => {
+              result += `¥${Math.abs(txn.amount).toLocaleString()} - ${txn.category}<br/>`;
+            });
+            if (txns.length > 5) {
+              result += `...还有 ${txns.length - 5} 笔记录`;
+            }
+          }
+          
+          return result;
+        },
+        enterable: true,
+        hideDelay: 1000,
+      },
+      grid: {
+        left: '3%',
+        right: '4%',
+        bottom: '3%',
+        containLabel: true,
+      },
+      xAxis: {
+        type: 'category',
+        data: barData.map(d => d.name),
+      },
+      yAxis: {
+        type: 'value',
+        name: '金额',
+      },
+      series: [
+        {
+          name: '支出',
+          type: 'bar',
+          data: barData.map(d => d.value),
+          itemStyle: {
             borderRadius: [4, 4, 0, 0],
           },
         },
       ],
     };
-  }, [accounts, actualExpenses]);
-
-  // ---- 预算执行对比 ----
-  const budgetCompareOption = useMemo(() => {
-    if (budgets.length === 0) return null;
-    const fullMonth = isFullNaturalMonthRange(rangeFrom, rangeTo);
-    const { monthStart, monthEnd, daysInMonth } = getMonthBounds(rangeFrom);
-    const rangeDays = diffDaysInclusive(rangeFrom, rangeTo);
-
-    const compareRows = budgets
-      .filter((b) => b.cycleType !== 'yearly')
-      .filter((b) => b.cycleType !== 'once')
-      .map((budget) => {
-        let budgetAmountInRange = 0;
-        let usedStart = rangeFrom;
-        let usedEnd = actualCutoff;
-
-        if (fullMonth) {
-          usedStart = monthStart;
-          usedEnd = actualCutoff < monthEnd ? actualCutoff : monthEnd;
-          if (budget.cycleType === 'monthly') {
-            budgetAmountInRange = budget.amount;
-          } else if (budget.cycleType === 'weekly') {
-            budgetAmountInRange =
-              weeklyBudgetNormalizeMode === 'days' ? budget.amount * (daysInMonth / 7) : budget.amount * 4;
-          } else if (budget.cycleType === 'custom') {
-            const cycleDays = budget.cycleDays || 0;
-            const effectiveStart = budget.startDate > monthStart ? budget.startDate : monthStart;
-            if (effectiveStart <= monthEnd && cycleDays > 0) {
-              const overlapRaw = diffDaysInclusive(effectiveStart, monthEnd);
-              const overlapDays = Math.min(overlapRaw, cycleDays);
-              const effectiveEnd = formatLocalISODate(addDays(parseISODate(effectiveStart), overlapDays - 1));
-              usedStart = effectiveStart;
-              usedEnd = effectiveEnd < usedEnd ? effectiveEnd : usedEnd;
-              budgetAmountInRange = budget.amount * (overlapDays / cycleDays);
-            }
-          }
-        } else {
-          if (budget.cycleType === 'monthly') {
-            budgetAmountInRange = budget.amount * (rangeDays / daysInMonth);
-          } else if (budget.cycleType === 'weekly') {
-            budgetAmountInRange = budget.amount * (rangeDays / 7);
-          } else if (budget.cycleType === 'custom') {
-            const cycleDays = budget.cycleDays || 0;
-            if (cycleDays > 0) {
-              const overlapDays = Math.min(rangeDays, cycleDays);
-              budgetAmountInRange = budget.amount * (overlapDays / cycleDays);
-            }
-          }
-        }
-
-        const usedAmount =
-          usedStart <= usedEnd
-            ? transactions
-                .filter((t) => t.amount < 0)
-                .filter((t) => t.budgetId === budget.id)
-                .filter((t) => t.date >= usedStart && t.date <= usedEnd)
-                .reduce((sum, t) => sum + Math.abs(t.amount), 0)
-            : 0;
-
-        return {
-          id: budget.id,
-          name: budget.name,
-          cycleType: budget.cycleType,
-          budgetAmountInRange,
-          usedAmount,
-        };
-      })
-      .filter((row) => row.budgetAmountInRange > 0 || row.usedAmount > 0)
-      .sort((a, b) => b.usedAmount - a.usedAmount);
-
-    const names = compareRows.map((r) => r.name);
-    const budgetAmounts = compareRows.map((r) => r.budgetAmountInRange);
-    const usedAmounts = compareRows.map((r) => r.usedAmount);
-
-    return {
-      tooltip: { trigger: 'axis' },
-      legend: { data: ['预算金额', '已使用'], bottom: 0 },
-      grid: { left: '3%', right: '4%', bottom: '12%', containLabel: true },
-      xAxis: { type: 'category', data: names, axisLabel: { rotate: 15 } },
-      yAxis: { type: 'value', name: '金额 (元)' },
-      series: [
-        {
-          name: '预算金额',
-          type: 'bar',
-          data: budgetAmounts,
-          itemStyle: { color: CHART_COLORS[1], borderRadius: [4, 4, 0, 0] },
-          barGap: '20%',
-        },
-        {
-          name: '已使用',
-          type: 'bar',
-          data: usedAmounts.map((v, i) => ({
-            value: v,
-            itemStyle: {
-              color: v > budgetAmounts[i] ? '#E5484D' : CHART_COLORS[0],
-              borderRadius: [4, 4, 0, 0],
-            },
-          })),
-        },
-      ],
-    };
-  }, [budgets, rangeFrom, rangeTo, actualCutoff, transactions, weeklyBudgetNormalizeMode]);
-
-  // ---- 分类支出分布 ----
-  const categoryPieOption = useMemo(() => {
-    const categoryMap: Record<string, number> = {};
-    actualExpenses.forEach((t) => {
-      categoryMap[t.category] = (categoryMap[t.category] || 0) + t.amount;
-    });
-    const data = Object.entries(categoryMap).map(([name, value]) => ({ name, value }));
-
-    return {
-      tooltip: { trigger: 'item', formatter: '{b}: ¥{c} ({d}%)' },
-      legend: { orient: 'vertical', right: '5%', top: 'center' },
-      series: [
-        {
-          name: '分类支出',
-          type: 'pie',
-          radius: ['45%', '75%'],
-          center: ['40%', '50%'],
-          avoidLabelOverlap: false,
-          itemStyle: { borderRadius: 4, borderColor: '#fff', borderWidth: 2 },
-          label: { show: false },
-          emphasis: { label: { show: true, fontSize: 14, fontWeight: 'bold' } },
-          data,
-          color: CHART_COLORS,
-        },
-      ],
-    };
-  }, [actualExpenses]);
-
-  // ---- 时间趋势 ----
-  const trendOption = useMemo(() => {
-    if (actualExpenses.length === 0) return null;
-
-    const sorted = [...actualExpenses].sort((a, b) => a.effectiveDate.localeCompare(b.effectiveDate));
-    const buckets: Record<string, number> = {};
-
-    sorted.forEach((t) => {
-      const d = new Date(t.effectiveDate);
-      let key: string;
-      if (timeGranularity === 'daily') {
-        key = t.effectiveDate;
-      } else if (timeGranularity === 'weekly') {
-        key = getWeekStart(d);
-      } else {
-        key = getMonthKey(d);
-      }
-      buckets[key] = (buckets[key] || 0) + t.amount;
-    });
-
-    const entries = Object.entries(buckets).sort(([a], [b]) => a.localeCompare(b));
-
-    return {
-      tooltip: { trigger: 'axis' },
-      grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-      xAxis: {
-        type: 'category',
-        data: entries.map(([k]) => k),
-        axisLabel: { rotate: 30, fontSize: 11 },
-      },
-      yAxis: { type: 'value', name: '支出 (元)' },
-      series: [
-        {
-          name: '支出趋势',
-          type: 'line',
-          data: entries.map(([, v]) => v),
-          smooth: true,
-          lineStyle: { color: CHART_COLORS[0], width: 2 },
-          itemStyle: { color: CHART_COLORS[0] },
-          areaStyle: {
-            color: {
-              type: 'linear',
-              x: 0, y: 0, x2: 0, y2: 1,
-              colorStops: [
-                { offset: 0, color: 'rgba(43,167,160,0.25)' },
-                { offset: 1, color: 'rgba(43,167,160,0.02)' },
-              ],
-            },
-          },
-        },
-      ],
-    };
-  }, [actualExpenses, timeGranularity]);
-
-  // ---- 账户支出对比 ----
-  const accountCompareOption = useMemo(() => {
-    if (accounts.length === 0) return null;
-    const names = accounts.map((a) => a.name);
-    const values = accounts.map((a) =>
-      actualExpenses.filter((t) => t.accountId === a.id).reduce((sum, t) => sum + t.amount, 0),
-    );
-
-    return {
-      tooltip: { trigger: 'axis' },
-      grid: { left: '3%', right: '4%', bottom: '3%', containLabel: true },
-      xAxis: { type: 'category', data: names, axisLabel: { rotate: 20 } },
-      yAxis: { type: 'value', name: '支出 (元)' },
-      series: [
-        {
-          name: '总支出',
-          type: 'bar',
-          data: values.map((v, i) => ({
-            value: v,
-            itemStyle: {
-              color: CHART_COLORS[i % CHART_COLORS.length],
-              borderRadius: [4, 4, 0, 0],
-            },
-          })),
-        },
-      ],
-    };
-  }, [accounts, actualExpenses]);
-
-  const totalExpense = useMemo(() => actualExpenses.reduce((sum, t) => sum + t.amount, 0), [actualExpenses]);
-  const totalIncome = useMemo(
-    () => actualTransactions.filter((t) => t.amount > 0 && t.transactionType !== 'repayment_in').reduce((sum, t) => sum + t.amount, 0),
-    [actualTransactions],
-  );
-  const currentBalance = totalIncome - totalExpense;
-  const expectedOutflow = useMemo(
-    () => futureExpenseItems.reduce((sum, item) => sum + item.amount, 0),
-    [futureExpenseItems],
-  );
-  const expectedBalance = currentBalance - expectedOutflow;
+  }, [filteredTransactions, accounts]);
 
   return (
     <div className="min-h-screen bg-background">
       <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6">
-        {/* 页面标题 */}
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">统计分析</h1>
-          <p className="text-sm text-muted-foreground mt-1">多维度消费数据分析、预算追踪与现金流观察</p>
+        {/* 页面标题 + 控制区 */}
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-foreground">预算模拟</h1>
+            <p className="text-sm text-muted-foreground mt-1">财务状态分析、预算执行与未来现金流预测</p>
+          </div>
+          <Tabs value={selectedPeriod} onValueChange={(v) => setSelectedPeriod(v as StatsPeriod)} className="shrink-0">
+            <TabsList className="h-9">
+              {Object.entries(PERIOD_LABELS).map(([value, label]) => (
+                <TabsTrigger key={value} value={value} className="px-4">{label}</TabsTrigger>
+              ))}
+            </TabsList>
+          </Tabs>
         </div>
 
         <Card>
           <CardContent className="pt-6 flex flex-col md:flex-row md:items-end md:justify-between gap-4">
-            <div className="space-y-1">
-              <p className="font-medium">时间范围</p>
-              <p className="text-sm text-muted-foreground">统计与预算对比会按该范围计算</p>
+            <div>
+              <p className="font-medium">查看范围</p>
+              <p className="text-sm text-muted-foreground">{rangeFrom} ~ {rangeTo}</p>
             </div>
             <div className="flex flex-wrap items-end gap-3">
               <div className="grid gap-1.5">
@@ -516,267 +614,302 @@ export default function StatisticsPage() {
           </CardContent>
         </Card>
 
-        {/* 概览卡片 */}
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>总支出</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold tabular-nums text-destructive">
-                ¥{totalExpense.toLocaleString()}
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>总收入</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold tabular-nums text-success">
-                ¥{totalIncome.toLocaleString()}
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>交易笔数</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold tabular-nums">{actualTransactions.length}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>预算项目</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold tabular-nums">{budgets.length}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardDescription>预期结余</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className={`text-2xl font-bold tabular-nums ${expectedBalance >= 0 ? 'text-foreground' : 'text-destructive'}`}>
-                ¥{expectedBalance.toLocaleString()}
-              </p>
-              <p className="text-xs text-muted-foreground mt-1">
-                {timelineMode === 'cashflow' ? '按现金流日' : '按消费日'}待发生支出 ¥{expectedOutflow.toLocaleString()}
-              </p>
-            </CardContent>
-          </Card>
-        </div>
-
-        {timelineMode === 'cashflow' && (
-          <Card>
-            <CardHeader>
-              <CardTitle>预算-现金流差异</CardTitle>
-              <CardDescription>显示信用消费因账单/还款日后移带来的资金支出延后</CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              {shiftedTransactions
-                .filter((transaction) => transaction.cashOutDate! >= rangeFrom && transaction.cashOutDate! <= rangeTo)
-                .slice(0, 8)
-                .map((transaction) => (
-                  <div key={transaction.id} className="flex items-center justify-between gap-3 rounded-lg border p-3">
-                    <div className="min-w-0">
-                      <p className="font-medium truncate">{transaction.note || transaction.category}</p>
-                      <p className="text-sm text-muted-foreground">
-                        消费日 {transaction.date} {'->'} 现金流日 {transaction.cashOutDate}
-                      </p>
-                    </div>
-                    <p className="font-semibold tabular-nums">¥{Math.abs(transaction.amount).toLocaleString()}</p>
-                  </div>
-                ))}
-              {shiftedTransactions.filter((transaction) => transaction.cashOutDate! >= rangeFrom && transaction.cashOutDate! <= rangeTo).length === 0 && (
-                <p className="text-sm text-muted-foreground py-6 text-center">当前范围内没有消费日和现金流日分离的支出</p>
-              )}
-            </CardContent>
-          </Card>
-        )}
-
+        {/* 1. 财务状态概览 */}
         <Card>
-          <CardContent className="pt-6 flex flex-col md:flex-row md:items-center md:justify-between gap-4">
-            <div>
-              <p className="font-medium">预期支出设置</p>
-              <p className="text-sm text-muted-foreground">开启后会将当前范围内到期的预算结算额纳入预期结余</p>
-            </div>
-            <div className="flex items-center gap-2">
-              <Label htmlFor="include-budget-settlement">考虑预算结算</Label>
-              <Switch
-                id="include-budget-settlement"
-                checked={includeBudgetSettlement}
-                onCheckedChange={setIncludeBudgetSettlement}
-              />
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Wallet className="size-5 text-primary" />
+              财务状态概览
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4">
+              <Card className="col-span-2 md:col-span-1">
+                <CardHeader className="pb-2">
+                  <CardDescription>收入</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-bold tabular-nums text-success">¥{financialOverview.income.toFixed(0).toLocaleString()}</p>
+                </CardContent>
+              </Card>
+              
+              <Card className="col-span-2 md:col-span-1">
+                <CardHeader className="pb-2">
+                  <CardDescription>支出</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-2xl font-bold tabular-nums text-destructive">¥{financialOverview.expenses.toFixed(0).toLocaleString()}</p>
+                </CardContent>
+              </Card>
+
+              <Card className="col-span-2 md:col-span-1">
+                <CardHeader className="pb-2">
+                  <CardDescription>储蓄率</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className={`text-2xl font-bold tabular-nums ${financialOverview.savingRate >= 20 ? 'text-success' : financialOverview.savingRate >= 10 ? '' : 'text-destructive'}`}>{financialOverview.savingRate}%</p>
+                </CardContent>
+              </Card>
+
+              <Card className="col-span-2 md:col-span-1">
+                <CardHeader className="pb-2">
+                  <CardDescription>必要支出</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-lg font-semibold tabular-nums">¥{financialOverview.rigidExpenses.toFixed(0).toLocaleString()}</p>
+                </CardContent>
+              </Card>
+
+              <Card className="col-span-2 md:col-span-1">
+                <CardHeader className="pb-2">
+                  <CardDescription>弹性支出</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-lg font-semibold tabular-nums">¥{financialOverview.flexibleExpenses.toFixed(0).toLocaleString()}</p>
+                </CardContent>
+              </Card>
+
+              <Card className="col-span-2 md:col-span-1">
+                <CardHeader className="pb-2">
+                  <CardDescription>现金安全</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className={`text-lg font-semibold tabular-nums ${financialOverview.cashSafetyMonths >= 6 ? 'text-success' : financialOverview.cashSafetyMonths >= 3 ? '' : 'text-destructive'}`}>{financialOverview.cashSafetyMonths} 月</p>
+                </CardContent>
+              </Card>
+
+              <Card className="col-span-2 md:col-span-1">
+                <CardHeader className="pb-2">
+                  <CardDescription>负债压力</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className={`text-lg font-semibold tabular-nums ${financialOverview.debtPressure > 30 ? 'text-destructive' : ''}`}>{financialOverview.debtPressure}%</p>
+                </CardContent>
+              </Card>
+
+              <Card className="col-span-2 md:col-span-1">
+                <CardHeader className="pb-2">
+                  <CardDescription>预算状态</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className={`text-lg font-semibold ${financialOverview.budgetStatus === '超支' ? 'text-destructive' : 'text-success'}`}>{financialOverview.budgetStatus}</p>
+                </CardContent>
+              </Card>
+
+              <Card className="col-span-2 md:col-span-1">
+                <CardHeader className="pb-2">
+                  <CardDescription>信用负债</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-lg font-semibold tabular-nums text-destructive">¥{financialOverview.totalDebt.toFixed(0).toLocaleString()}</p>
+                </CardContent>
+              </Card>
             </div>
           </CardContent>
         </Card>
 
-        {futureExpenseItems.length > 0 && (
+        {/* 2. 预算执行分析 */}
+        <div className="grid grid-cols-1 xl:grid-cols-[2fr_1fr] gap-6">
           <Card>
             <CardHeader>
-              <CardTitle>预期支出</CardTitle>
-              <CardDescription>展示当前范围内尚未发生的分期账单、未来支出和预算结算</CardDescription>
+              <CardTitle className="flex items-center gap-2">
+                <BarChart3 className="size-5 text-primary" />
+                预算执行分析
+              </CardTitle>
+              <CardDescription>查看各品类预算与实际支出对比</CardDescription>
             </CardHeader>
-            <CardContent className="space-y-3">
-              {futureExpenseItems.map((item) => (
-                <div key={item.id} className="flex items-start justify-between gap-3 rounded-lg border p-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium">{item.title}</p>
-                      <Badge variant="outline" className="text-xs">
-                        {item.type === 'budget' ? '预算结算' : item.type === 'installment' ? '分期账单' : '未来支出'}
-                      </Badge>
-                    </div>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      {item.date}
-                      {item.accountId ? ` · ${accounts.find((account) => account.id === item.accountId)?.name || '未知账户'}` : ''}
-                    </p>
-                    {item.originalDate && item.originalDate !== item.date && (
-                      <p className="text-xs text-muted-foreground mt-1">
-                        消费日 {item.originalDate} {'->'} 现金流日 {item.date}
-                      </p>
-                    )}
-                  </div>
-                  <p className="font-semibold text-destructive tabular-nums">¥{item.amount.toLocaleString()}</p>
+            <CardContent>
+              {budgetAnalysis.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[700px] text-sm">
+                    <thead>
+                      <tr className="border-b text-left text-muted-foreground">
+                        <th className="py-3 pr-4 font-medium">品类</th>
+                        <th className="py-3 pr-4 font-medium">预算金额</th>
+                        <th className="py-3 pr-4 font-medium">实际发生</th>
+                        <th className="py-3 pr-4 font-medium">预算差额</th>
+                        <th className="py-3 font-medium">状态</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {budgetAnalysis.map((item) => (
+                        <tr key={item.category} className="border-b last:border-b-0">
+                          <td className="py-3 pr-4 font-medium">{item.category}</td>
+                          <td className="py-3 pr-4 tabular-nums">¥{item.budgetAmount.toFixed(0)}</td>
+                          <td className="py-3 pr-4 tabular-nums">¥{item.actualAmount.toFixed(0)}</td>
+                          <td className={`py-3 pr-4 tabular-nums ${item.budgetAmount > 0 && item.actualAmount > item.budgetAmount ? 'text-destructive' : 'text-success'}`}>{item.budgetAmount > 0 ? `¥${(item.actualAmount - item.budgetAmount).toFixed(0)}` : '-'}</td>
+                          <td className="py-3">
+                            {item.status === 'normal' ? (
+                              <Badge variant="outline">正常</Badge>
+                            ) : item.status === 'over' ? (
+                              <Badge variant="destructive">超支</Badge>
+                            ) : (
+                              <Badge variant="secondary">预算过剩</Badge>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              ))}
+              ) : (
+                <p className="text-sm text-muted-foreground text-center py-12">暂无预算数据</p>
+              )}
             </CardContent>
           </Card>
-        )}
 
-        {/* 超支预警 */}
-        {overBudgetAlerts.length > 0 && (
-          <div className="space-y-2">
-            {overBudgetAlerts.map((b) => (
-              <Alert
-                key={b.id}
-                variant={b.rate >= 100 ? 'destructive' : 'default'}
-                className="cursor-pointer"
-                onClick={() => navigate('/budgets')}
-              >
-                <AlertTriangle className="size-4" />
-                <AlertTitle className="flex items-center gap-2">
-                  {b.name}
-                  <Badge variant={b.rate >= 100 ? 'destructive' : 'secondary'} className="text-xs">
-                    {b.rate >= 100 ? '已超支' : '即将超支'}
-                  </Badge>
-                </AlertTitle>
-                <AlertDescription>
-                  已使用 ¥{b.used.toFixed(0)} / 预算 ¥{b.amount}（{b.rate.toFixed(0)}%）
-                  {b.currentPeriodStart && b.currentPeriodEnd ? ` · 当前周期 ${b.currentPeriodStart} ~ ${b.currentPeriodEnd}` : ''}
-                </AlertDescription>
-              </Alert>
-            ))}
-          </div>
-        )}
-
-        {/* 账单周期统计 */}
-        {timelineMode === 'expense' && billingCycleOption && (
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <TrendingUp className="size-5 text-primary" />
-                账单周期统计
+                预算调整建议
               </CardTitle>
-              <CardDescription>按各信用卡/花呗账单周期统计本期支出</CardDescription>
             </CardHeader>
-            <CardContent>
-              <ReactECharts option={billingCycleOption} style={{ height: 320 }} />
+            <CardContent className="space-y-3">
+              {budgetSuggestions.length > 0 ? (
+                budgetSuggestions.map((suggestion) => (
+                  <div key={suggestion.category} className="rounded-lg border p-4">
+                    <p className="font-medium">{suggestion.category}</p>
+                    <p className="mt-1 text-sm text-muted-foreground">{suggestion.suggestion}</p>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-muted-foreground text-center py-8">预算状况良好，暂无调整建议</p>
+              )}
             </CardContent>
           </Card>
-        )}
-
-        {/* 预算执行对比 */}
-        {budgetCompareOption && (
-          <Card>
-            <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-              <div>
-                <CardTitle>预算执行对比</CardTitle>
-                <CardDescription>
-                  月维度：周预算按{weeklyBudgetNormalizeMode === 'days' ? '当月天数/7' : '4 周'}折算，自定义周期按当月覆盖天数比例折算；不包含年预算
-                </CardDescription>
-              </div>
-              <div className="flex items-end gap-2">
-                <div className="grid gap-1.5">
-                  <Label htmlFor="weekly-normalize" className="text-xs text-muted-foreground">
-                    周预算折算
-                  </Label>
-                  <Select
-                    value={weeklyBudgetNormalizeMode}
-                    onValueChange={(value) => setWeeklyBudgetNormalizeMode(value as WeeklyBudgetNormalizeMode)}
-                  >
-                    <SelectTrigger id="weekly-normalize" className="w-[150px] h-9">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="weeks4">按 4 周</SelectItem>
-                      <SelectItem value="days">按天数比例</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            </CardHeader>
-            <CardContent>
-              <ReactECharts option={budgetCompareOption} style={{ height: 360 }} />
-            </CardContent>
-          </Card>
-        )}
-
-        {/* 分类支出分布 + 账户支出对比 */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <Card>
-            <CardHeader>
-              <CardTitle>分类支出分布</CardTitle>
-              <CardDescription>各消费分类的支出占比</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <ReactECharts option={categoryPieOption} style={{ height: 320 }} />
-            </CardContent>
-          </Card>
-
-          {accountCompareOption && (
-            <Card>
-              <CardHeader>
-                <CardTitle>账户支出对比</CardTitle>
-                <CardDescription>各账户总支出金额对比</CardDescription>
-              </CardHeader>
-              <CardContent>
-                <ReactECharts option={accountCompareOption} style={{ height: 320 }} />
-              </CardContent>
-            </Card>
-          )}
         </div>
 
-        {/* 时间趋势 */}
+        {/* 3. 未来现金流模拟 */}
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
-            <div>
-              <CardTitle>支出趋势</CardTitle>
-              <CardDescription>按时间粒度查看支出变化趋势</CardDescription>
-            </div>
-            <Tabs
-              value={timeGranularity}
-              onValueChange={(v) => setTimeGranularity(v as TimeGranularity)}
-            >
-              <TabsList className="h-8">
-                <TabsTrigger value="daily" className="text-xs px-3">日</TabsTrigger>
-                <TabsTrigger value="weekly" className="text-xs px-3">周</TabsTrigger>
-                <TabsTrigger value="monthly" className="text-xs px-3">月</TabsTrigger>
-              </TabsList>
-            </Tabs>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <Wallet className="size-5 text-primary" />
+              未来 6 个月现金流模拟
+            </CardTitle>
+            <CardDescription>基于当前收支趋势的乐观/基准/保守三情景预测</CardDescription>
           </CardHeader>
           <CardContent>
-            {trendOption ? (
-              <ReactECharts option={trendOption} style={{ height: 340 }} />
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[800px] text-sm">
+                <thead>
+                  <tr className="border-b text-left text-muted-foreground">
+                    <th className="py-3 pr-4 font-medium">月份</th>
+                    <th className="py-3 pr-4 font-medium">收入预测</th>
+                    <th className="py-3 pr-4 font-medium">支出预测</th>
+                    <th className="py-3 pr-4 font-medium">乐观</th>
+                    <th className="py-3 pr-4 font-medium">基准</th>
+                    <th className="py-3 font-medium">保守</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {futureCashFlow.map((row) => (
+                    <tr key={row.monthKey} className="border-b last:border-b-0">
+                      <td className="py-3 pr-4 font-medium">{row.label}</td>
+                      <td className="py-3 pr-4 tabular-nums">¥{row.income.toFixed(0)}</td>
+                      <td className="py-3 pr-4 tabular-nums text-destructive">¥{row.expenses.toFixed(0)}</td>
+                      <td className="py-3 pr-4 tabular-nums text-success">¥{row.optimistic.toFixed(0)}</td>
+                      <td className={`py-3 pr-4 tabular-nums ${row.baseline < 0 ? 'text-destructive' : 'text-success'}`}>¥{row.baseline.toFixed(0)}</td>
+                      <td className={`py-3 tabular-nums ${row.conservative < 0 ? 'text-destructive' : ''}`}>¥{row.conservative.toFixed(0)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* 4. 预警中心 */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <AlertTriangle className="size-5 text-primary" />
+              预警中心
+            </CardTitle>
+            <CardDescription>汇总超支、风险、大额支出等信息</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {alerts.length > 0 ? (
+              alerts.map((alert, i) => (
+                <Alert key={i} variant={alert.severity === 'high' ? 'destructive' : 'default'}>
+                  <AlertTitle className="flex items-center gap-2">
+                    {alert.title}
+                    <Badge variant={alert.severity === 'high' ? 'destructive' : 'secondary'}>
+                      {alert.severity === 'high' ? '高风险' : alert.severity === 'medium' ? '关注' : '提示'}
+                    </Badge>
+                  </AlertTitle>
+                  <AlertDescription>{alert.description}</AlertDescription>
+                </Alert>
+              ))
             ) : (
-              <p className="text-sm text-muted-foreground text-center py-12">暂无支出数据</p>
+              <p className="text-sm text-muted-foreground text-center py-8">当前无风险预警，财务状况良好</p>
             )}
+          </CardContent>
+        </Card>
+
+        {/* 5. 分类支出分布 */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <PieChart className="size-5 text-primary" />
+              分类支出分布
+            </CardTitle>
+            <CardDescription>鼠标悬停查看各分类的详细记录</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ReactECharts option={categoryPieChartOption} style={{ height: 400 }} />
+          </CardContent>
+        </Card>
+
+        {/* 6. 账户支出对比 */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <BarChart3 className="size-5 text-primary" />
+              账户支出对比
+            </CardTitle>
+            <CardDescription>鼠标悬停查看各账户的详细记录</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ReactECharts option={accountBarChartOption} style={{ height: 400 }} />
+          </CardContent>
+        </Card>
+
+        {/* 7. 财务趋势 */}
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <TrendingUp className="size-5 text-primary" />
+              财务趋势
+            </CardTitle>
+            <CardDescription>最近 6 个月收入、支出、储蓄趋势，鼠标悬停查看详细记录</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ReactECharts option={trendChartOption} style={{ height: 400 }} />
           </CardContent>
         </Card>
       </main>
     </div>
   );
+}
+
+// 辅助函数：推断支出属性
+function inferExpenseAttribute(txn: Partial<ITransaction>): ExpenseAttribute {
+  if (txn.expenseAttribute) return txn.expenseAttribute;
+  
+  if (txn.category === '住房' || txn.category === '交通') {
+    return 'rigid_fixed';
+  }
+
+  const note = txn.note || '';
+  if (/年费|年度|会员|续费|保险|订阅|学费|体检/.test(note)) {
+    return 'annual_cycle';
+  }
+
+  const amount = Math.abs(txn.amount || 0);
+  if (amount >= 1000 && (txn.category === '购物' || txn.category === '娱乐')) {
+    return 'one_time_emergency';
+  }
+
+  return 'flexible_monthly';
 }
