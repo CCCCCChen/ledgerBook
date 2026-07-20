@@ -133,6 +133,13 @@ export default function BudgetsPage() {
 
   const [importInput, setImportInput] = useState<string>('');
 
+  // 获取账户名称 - 移到前面避免初始化顺序问题
+  const getAccountName = (accountId?: string) => {
+    if (!accountId) return '未指定账户';
+    const acc = accounts.find((a) => a.id === accountId);
+    return acc?.name || '未知账户';
+  };
+
   // 加载支出预算
   const refreshBudgets = useCallback(async () => {
     const bdgs = await loadBudgets();
@@ -557,12 +564,6 @@ export default function BudgetsPage() {
     } else {
       toast.error('数据格式不正确');
     }
-  };
-
-  const getAccountName = (accountId?: string) => {
-    if (!accountId) return '未指定账户';
-    const acc = accounts.find((a) => a.id === accountId);
-    return acc?.name || '未知账户';
   };
 
   return (
