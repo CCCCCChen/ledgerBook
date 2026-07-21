@@ -1,5 +1,13 @@
 import type { IBudget, ITransaction } from '@/types/finance';
-import { formatLocalISODate } from '@/lib/date';
+import {
+  parseISODate,
+  formatISODate,
+  addDays,
+  getSafeMonthDay,
+  getBudgetCycleWindow,
+} from '@shared/installment-utils';
+
+export { getBudgetCycleWindow };
 
 export interface BudgetCycleWindow {
   start: string;
@@ -16,105 +24,8 @@ export interface BudgetSettlementItem {
   expectedAmount: number;
 }
 
-function parseISODate(date: string): Date {
-  return new Date(`${date}T00:00:00`);
-}
-
-function formatISODate(date: Date): string {
-  return formatLocalISODate(date);
-}
-
-function addDays(date: Date, days: number): Date {
-  const result = new Date(date);
-  result.setDate(result.getDate() + days);
-  return result;
-}
-
 function endOfMonth(date: Date): Date {
   return new Date(date.getFullYear(), date.getMonth() + 1, 0);
-}
-
-function getSafeMonthDay(year: number, month: number, day: number): Date {
-  const lastDay = new Date(year, month + 1, 0).getDate();
-  return new Date(year, month, Math.min(day, lastDay));
-}
-
-export function getBudgetCycleWindow(budget: IBudget, refDate = new Date()): BudgetCycleWindow | null {
-  const anchor = parseISODate(budget.startDate);
-  const ref = parseISODate(formatISODate(refDate));
-
-  if (budget.cycleType === 'once') {
-    const end = budget.endDate || budget.startDate;
-    if (ref < anchor || ref > parseISODate(end)) {
-      return null;
-    }
-    return { start: budget.startDate, end };
-  }
-
-  if (ref < anchor) {
-    return { start: budget.startDate, end: budget.startDate };
-  }
-/*
-  if (budget.cycleType === 'weekly' || (budget.cycleType === 'custom' && budget.cycleDays)) {
-    const cycleDays = budget.cycleType === 'weekly' ? 7 : budget.cycleDays!;
-    const diffDays = Math.floor((ref.getTime() - anchor.getTime()) / 86400000);
-    const cycleIndex = Math.floor(diffDays / cycleDays);
-    const start = addDays(anchor, cycleIndex * cycleDays);
-    const end = addDays(start, cycleDays - 1);
-    return { start: formatISODate(start), end: formatISODate(end) };
-  }
-*/
-  if (budget.cycleType === 'weekly' || (budget.cycleType === 'custom' && budget.cycleDays)) {
-    if (budget.cycleType === 'weekly') {
-      // 1. 获取当前参考日所属周的周一
-      const refDay = ref.getDay();
-      const mondayOffset = refDay === 0 ? -6 : 1 - refDay;
-      const currentMonday = addDays(ref, mondayOffset);
-      
-      // 2. 计算预算起始日所属的周一（作为新锚点）
-      const anchorDay = anchor.getDay();
-      const anchorMondayOffset = anchorDay === 0 ? -6 : 1 - anchorDay;
-      const anchorMonday = addDays(anchor, anchorMondayOffset);
-      
-      // 3. 计算两者之间的完整周数差
-      const diffDays = Math.floor((currentMonday.getTime() - anchorMonday.getTime()) / 86400000);
-      const cycleIndex = Math.floor(diffDays / 7);
-      
-      // 4. 推算当前周期的起止日期
-      const start = addDays(anchorMonday, cycleIndex * 7);
-      const end = addDays(start, 6);
-      return { start: formatISODate(start), end: formatISODate(end) };
-    } 
-  
-  // custom 周期保持原逻辑不变
-  const cycleDays = budget.cycleDays!;
-  const diffDays = Math.floor((ref.getTime() - anchor.getTime()) / 86400000);
-  const cycleIndex = Math.floor(diffDays / cycleDays);
-  const start = addDays(anchor, cycleIndex * cycleDays);
-  const end = addDays(start, cycleDays - 1);
-  return { start: formatISODate(start), end: formatISODate(end) };
-}
-
-  if (budget.cycleType === 'monthly') {
-    const anchorDay = anchor.getDate();
-    let start = getSafeMonthDay(ref.getFullYear(), ref.getMonth(), anchorDay);
-    if (ref < start) {
-      start = getSafeMonthDay(ref.getFullYear(), ref.getMonth() - 1, anchorDay);
-    }
-    const nextStart = getSafeMonthDay(start.getFullYear(), start.getMonth() + 1, anchorDay);
-    const end = addDays(nextStart, -1);
-    return { start: formatISODate(start), end: formatISODate(end) };
-  }
-
-  const anchorMonth = anchor.getMonth();
-  const anchorDay = anchor.getDate();
-  let start = getSafeMonthDay(ref.getFullYear(), anchorMonth, anchorDay);
-  if (ref < start) {
-    start = getSafeMonthDay(ref.getFullYear() - 1, anchorMonth, anchorDay);
-  }
-  const nextStart = getSafeMonthDay(start.getFullYear() + 1, anchorMonth, anchorDay);
-  const end = addDays(nextStart, -1);
-  return { start: formatISODate(start), end: formatISODate(end) };
 }
 
 export function getBudgetUsedInWindow(budget: IBudget, transactions: ITransaction[], window: BudgetCycleWindow | null): number {

@@ -1,5 +1,6 @@
 // EXPORTS: getItem, setItem, removeItem, getAllKeys, clearAll, exportAllData, importAllData
 
+import type { ITransaction, IBudget, IAccount, IPlannedExpense } from '@/types/finance';
 import { formatLocalISODate } from './date';
 
 const STORAGE_KEYS = {
@@ -21,19 +22,19 @@ function getStorageBackend(): Storage | null {
   }
 }
 
-function getItem<T>(key: StorageKey): T[] {
+function getItem<T = unknown>(key: StorageKey): T[] {
   try {
     const raw = getStorageBackend()?.getItem(key);
     if (!raw) return [];
     const parsed = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : [];
+    return Array.isArray(parsed) ? (parsed as T[]) : [];
   } catch (error) {
     console.error('storage.getItem failed:', String(error));
     return [];
   }
 }
 
-function setItem<T>(key: StorageKey, data: T[]): void {
+function setItem<T = unknown>(key: StorageKey, data: T[]): void {
   try {
     getStorageBackend()?.setItem(key, JSON.stringify(data));
   } catch (error) {
@@ -128,5 +129,24 @@ function importAllData(jsonString: string): boolean {
   }
 }
 
-export { STORAGE_KEYS, getItem, setItem, removeItem, getAllKeys, clearAll, exportAllData, importAllData };
+// ============================================================
+// 领域存储快捷函数（供 data-service 分拆后的 service 模块使用）
+// ============================================================
+function lsLoadTransactions(): ITransaction[] { return getItem<ITransaction>(STORAGE_KEYS.transactions); }
+function lsSaveTransactions(data: ITransaction[]): void { setItem<ITransaction>(STORAGE_KEYS.transactions, data); }
+function lsLoadAccounts(): IAccount[] { return getItem<IAccount>(STORAGE_KEYS.accounts); }
+function lsSaveAccounts(data: IAccount[]): void { setItem<IAccount>(STORAGE_KEYS.accounts, data); }
+function lsLoadBudgets(): IBudget[] { return getItem<IBudget>(STORAGE_KEYS.budgets); }
+function lsSaveBudgets(data: IBudget[]): void { setItem<IBudget>(STORAGE_KEYS.budgets, data); }
+function lsLoadPlannedExpenses(): IPlannedExpense[] { return getItem<IPlannedExpense>(STORAGE_KEYS.plannedExpenses); }
+function lsSavePlannedExpenses(data: IPlannedExpense[]): void { setItem<IPlannedExpense>(STORAGE_KEYS.plannedExpenses, data); }
+
+export {
+  STORAGE_KEYS,
+  getItem, setItem, removeItem, getAllKeys, clearAll, exportAllData, importAllData,
+  lsLoadTransactions, lsSaveTransactions,
+  lsLoadAccounts, lsSaveAccounts,
+  lsLoadBudgets, lsSaveBudgets,
+  lsLoadPlannedExpenses, lsSavePlannedExpenses,
+};
 export type { StorageKey, IExportData };

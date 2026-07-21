@@ -50,6 +50,8 @@ const TYPE_ICON_MAP: Record<AccountType, typeof CreditCard> = {
   wechat_balance: Smartphone,
   credit_card: CreditCard,
   debit_card: Landmark,
+  debit: Landmark,
+  huabei: CreditCard,
 };
 
 const TYPE_BADGE_CLASS: Record<AccountType, string> = {
@@ -58,6 +60,8 @@ const TYPE_BADGE_CLASS: Record<AccountType, string> = {
   wechat_balance: 'bg-green-50 text-green-700 border-green-200',
   credit_card: 'bg-purple-50 text-purple-700 border-purple-200',
   debit_card: 'bg-amber-50 text-amber-700 border-amber-200',
+  debit: 'bg-amber-50 text-amber-700 border-amber-200',
+  huabei: 'bg-blue-50 text-blue-700 border-blue-200',
 };
 
 interface AccountFormData {

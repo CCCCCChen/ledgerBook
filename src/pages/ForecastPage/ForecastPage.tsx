@@ -512,33 +512,6 @@ export default function ForecastPage() {
     await refreshAll();
   };
 
-  const handleSaveGoal = () => {
-    const amount = Number(goalForm.targetAmount);
-    if (!amount || amount <= 0) {
-      toast.error('请输入有效目标金额');
-      return;
-    }
-    if (!goalForm.deadline) {
-      toast.error('请选择截止日期');
-      return;
-    }
-    const goal: SavingsGoal = {
-      targetAmount: amount,
-      deadline: goalForm.deadline,
-      createdAt: savingsGoal?.createdAt || new Date().toISOString(),
-    };
-    saveSavingsGoal(goal);
-    setSavingsGoal(goal);
-    resetGoalForm();
-    toast.success('储蓄目标已保存');
-  };
-
-  const handleDeleteGoal = () => {
-    deleteSavingsGoal();
-    setSavingsGoal(null);
-    toast.success('储蓄目标已清除');
-  };
-
   const runImpact = async (override?: Partial<{ date: string; amount: string; accountId: string }>) => {
     const nextImpactForm = { ...impactForm, ...override };
     if (!simulateFrom || simulateFrom > rangeTo) {
@@ -590,52 +563,214 @@ export default function ForecastPage() {
     await runImpact(next);
   };
 
+  // ============================================================
+  // Impact & Goal handlers
+  // ============================================================
+
+  const handleRunImpact = useCallback(async () => {
+    if (!impactForm.amount || !impactForm.date) return;
+    setImpactLoading(true);
+    try {
+      const res = await forecastApi.impact({
+        rangeFrom: new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10),
+        rangeTo: new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10),
+        startBalance: Number(startBalance || 0),
+        includePlannedExpenses,
+        includeBudgetSettlement,
+        simulatedExpense: {
+          amount: Number(impactForm.amount),
+          date: impactForm.date,
+        },
+      });
+      setImpactResult(res.data);
+    } catch {
+      toast.error('评估失败');
+    } finally {
+      setImpactLoading(false);
+    }
+  }, [impactForm, startBalance, safetyLine, includePlannedExpenses, includeBudgetSettlement]);
+
+  const handleSaveGoal = useCallback(() => {
+    const amt = Number(goalForm.targetAmount);
+    if (!amt || !goalForm.deadline) return;
+    saveSavingsGoal({ targetAmount: amt, deadline: goalForm.deadline, createdAt: new Date().toISOString() });
+    setSavingsGoal(loadSavingsGoal());
+    setGoalFormOpen(false);
+    toast.success('储蓄目标已保存');
+  }, [goalForm]);
+
+  const handleDeleteGoal = useCallback(() => {
+    deleteSavingsGoal();
+    setSavingsGoal(null);
+    toast.success('储蓄目标已删除');
+  }, []);
+
+  // Planned expense handlers
+  const openPlannedDialog = useCallback((id?: string) => {
+    if (id) {
+      const item = plannedExpenses.find(p => p.id === id);
+      if (item) {
+        setEditingId(id);
+        setForm({
+          name: item.name,
+          amount: String(item.amount),
+          plannedDate: item.plannedDate,
+          accountId: item.accountId || '',
+          category: item.category || '其他',
+          note: item.note || '',
+        });
+      }
+    } else {
+      setEditingId(null);
+      setForm({ name: '', amount: '', plannedDate: nowLocalISODate(), accountId: '', category: '其他', note: '' });
+    }
+    setDialogOpen(true);
+  }, [plannedExpenses]);
+
+  const handlePlannedSubmit = useCallback(async (e: FormEvent) => {
+    e.preventDefault();
+    if (!form.name.trim() || !form.amount) return;
+    try {
+      const payload = {
+        name: form.name.trim(),
+        amount: Number(form.amount),
+        plannedDate: form.plannedDate,
+        accountId: form.accountId || undefined,
+        category: form.category as TransactionCategory,
+        note: form.note,
+      };
+      if (editingId) {
+        await updatePlannedExpense(editingId, payload);
+      } else {
+        await createPlannedExpense(payload);
+      }
+      await refreshAll();
+      setDialogOpen(false);
+    } catch (err) {
+      toast.error(String(err));
+    }
+  }, [form, editingId, refreshAll]);
+
+  const handlePlannedDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    try {
+      await deletePlannedExpense(deleteTarget.id);
+      await refreshAll();
+    } catch (err) {
+      toast.error(String(err));
+    } finally {
+      setDeleteTarget(null);
+    }
+  }, [deleteTarget, refreshAll]);
+
+  // Computed data for sub-components
+  const chartPoints = useMemo(() => 
+    balanceSeries.dates.map((d, i) => ({ date: d, balance: balanceSeries.balances[i] })),
+    [balanceSeries]
+  );
+
+  const hasSimulationData = balanceSeries.dates.length > 0;
+
+  // ============================================================
+  // Render
+  // ============================================================
+
   return (
     <div className="min-h-screen bg-background">
       <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6">
+        {/* Header */}
         <div className="flex items-start justify-between gap-4">
           <div>
             <h1 className="text-2xl font-bold text-foreground">预期账单</h1>
-            <p className="text-sm text-muted-foreground mt-1">查看未来支出、分期账单以及预算结算对结余的影响</p>
+            <p className="text-sm text-muted-foreground mt-1">
+              查看未来支出、分期账单以及预算结算对结余的影响
+            </p>
           </div>
           <Button variant="outline" onClick={() => navigate('/statistics')}>
             查看统计
           </Button>
         </div>
 
+        {/* Strategy Selector */}
         <Card>
-          <CardContent className="pt-6 flex flex-col md:flex-row md:items-end md:justify-between gap-4">
-            <div className="space-y-1">
-              <p className="font-medium">时间范围</p>
-              <p className="text-sm text-muted-foreground">仅展示该范围内尚未发生的支出</p>
-            </div>
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="grid gap-1.5">
-                <Label htmlFor="forecast-from">开始</Label>
-                <Input id="forecast-from" type="date" value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} />
-              </div>
-              <div className="grid gap-1.5">
-                <Label htmlFor="forecast-to">结束</Label>
-                <Input id="forecast-to" type="date" value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} />
-              </div>
-              <div className="flex items-center gap-2 pb-1">
-                <Label htmlFor="forecast-budget">考虑预算结算</Label>
-                <Switch id="forecast-budget" checked={includeBudgetSettlement} onCheckedChange={setIncludeBudgetSettlement} />
-              </div>
-              <div className="flex items-center gap-2 pb-1">
-                <Label htmlFor="forecast-planned">考虑预估支出</Label>
-                <Switch id="forecast-planned" checked={includePlannedExpenses} onCheckedChange={setIncludePlannedExpenses} />
-              </div>
+          <CardContent className="p-4">
+            <div className="flex flex-wrap items-center gap-2">
+              {[
+                { id: 'conservative', label: '保守' },
+                { id: 'balanced', label: '均衡' },
+                { id: 'aggressive', label: '激进' },
+              ].map((s) => (
+                <Badge
+                  key={s.id}
+                  className={`cursor-pointer ${s.id === 'balanced' ? 'bg-primary text-primary-foreground' : ''}`}
+                  variant="outline"
+                >
+                  {s.label}
+                </Badge>
+              ))}
             </div>
           </CardContent>
         </Card>
 
+        {/* Simulation Panel */}
         <Card>
-          <CardHeader>
-            <CardTitle>现金流模拟器</CardTitle>
-            <CardDescription>以现金流日为准，叠加未来交易、预估支出、预算结算，预测余额曲线</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
+          <CardHeader><CardTitle className="text-base">模拟参数</CardTitle></CardHeader>
+          <CardContent className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div>
+              <Label>初始余额</Label>
+              <Input type="number" value={startBalance} onChange={(e) => setStartBalance(e.target.value)} />
+            </div>
+            <div>
+              <Label>安全线</Label>
+              <Input type="number" value={safetyLine} onChange={(e) => setSafetyLine(e.target.value)} />
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch id="pe" checked={includePlannedExpenses} onCheckedChange={setIncludePlannedExpenses} />
+              <Label htmlFor="pe">含预估支出</Label>
+            </div>
+            <div className="flex items-center gap-2">
+              <Switch id="bs" checked={includeBudgetSettlement} onCheckedChange={setIncludeBudgetSettlement} />
+              <Label htmlFor="bs">含预算结算</Label>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Result Chart */}
+        <Card>
+          <CardHeader><CardTitle className="text-base">现金流模拟</CardTitle></CardHeader>
+          <CardContent>
+            {hasSimulationData && chartPoints.length > 0 ? (
+              <ReactECharts
+                option={{
+                  xAxis: { type: 'category', data: chartPoints.map((p: any) => p.date) },
+                  yAxis: { type: 'value' },
+                  series: [
+                    {
+                      type: 'line',
+                      data: chartPoints.map((p: any) => p.balance),
+                      smooth: true,
+                      markLine: Number(safetyLine || 0) > 0 ? {
+                        data: [{ yAxis: Number(safetyLine), name: '安全线' }],
+                      } : undefined,
+                    },
+                  ],
+                }}
+                style={{ height: 320 }}
+              />
+            ) : (
+              <p className="text-muted-foreground text-sm text-center py-8">请先运行模拟以查看结果</p>
+            )}
+            <div className="grid grid-cols-3 gap-4 mt-4 text-center text-sm">
+              <div><p className="text-muted-foreground">最低结余</p><p className="font-semibold text-base">¥{Math.round(balanceSeries.minBalance || 0).toLocaleString()}</p></div>
+              <div><p className="text-muted-foreground">最低日期</p><p className="font-semibold text-base">{balanceSeries.minDate || '-'}</p></div>
+              <div><p className="text-muted-foreground">期末结余</p><p className="font-semibold text-base">¥{Math.round(balanceSeries.endBalance || 0).toLocaleString()}</p></div>
+            </div>
+          </CardContent>
+        </Card>
+
+        {/* Time Range & Balance Controls */}
+        <Card>
+          <CardContent className="pt-6 space-y-4">
             <div className="flex flex-wrap items-end gap-3">
               <div className="grid gap-1.5">
                 <Label htmlFor="sim-from">模拟起始日</Label>
@@ -643,33 +778,19 @@ export default function ForecastPage() {
               </div>
               <div className="grid gap-1.5">
                 <Label htmlFor="sim-balance">起始余额</Label>
-                <Input
-                  id="sim-balance"
-                  type="number"
-                  step="0.01"
-                  value={startBalance}
-                  onChange={(e) => setStartBalance(e.target.value)}
-                />
+                <Input id="sim-balance" type="number" step="0.01" value={startBalance} onChange={(e) => setStartBalance(e.target.value)} />
               </div>
               <div className="grid gap-1.5">
                 <Label htmlFor="sim-safety">安全线</Label>
-                <Input
-                  id="sim-safety"
-                  type="number"
-                  step="0.01"
-                  value={safetyLine}
-                  onChange={(e) => setSafetyLine(e.target.value)}
-                />
+                <Input id="sim-safety" type="number" step="0.01" value={safetyLine} onChange={(e) => setSafetyLine(e.target.value)} />
               </div>
-              <div className="grid gap-1">
-                <p className="text-xs text-muted-foreground">最低余额</p>
-                <p className={`text-base font-semibold tabular-nums ${balanceSeries.minBalance < Number(safetyLine || 0) ? 'text-destructive' : 'text-foreground'}`}>
-                  ¥{Math.round(balanceSeries.minBalance).toLocaleString()} · {balanceSeries.minDate}
-                </p>
+              <div className="flex items-center gap-2 pb-1">
+                <Label htmlFor="forecast-planned">考虑预估支出</Label>
+                <Switch id="forecast-planned" checked={includePlannedExpenses} onCheckedChange={setIncludePlannedExpenses} />
               </div>
-              <div className="grid gap-1">
-                <p className="text-xs text-muted-foreground">期末余额</p>
-                <p className="text-base font-semibold tabular-nums">¥{Math.round(balanceSeries.endBalance).toLocaleString()}</p>
+              <div className="flex items-center gap-2 pb-1">
+                <Label htmlFor="forecast-budget">考虑预算结算</Label>
+                <Switch id="forecast-budget" checked={includeBudgetSettlement} onCheckedChange={setIncludeBudgetSettlement} />
               </div>
             </div>
             {balanceOption ? (
@@ -680,582 +801,209 @@ export default function ForecastPage() {
           </CardContent>
         </Card>
 
+        {/* Impact Assessment */}
         <Card>
           <CardHeader>
             <CardTitle>大额消费影响评估</CardTitle>
-            <CardDescription>在当前预测范围内，比较“基线”与“额外增加一笔消费”后的最低余额差异</CardDescription>
+            <CardDescription>比较基线与额外一笔消费后的余额差异</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex flex-wrap items-end gap-3">
               <div className="grid gap-1.5">
                 <Label htmlFor="impact-date">消费日期</Label>
-                <Input
-                  id="impact-date"
-                  type="date"
-                  value={impactForm.date}
-                  onChange={(e) => setImpactForm((prev) => ({ ...prev, date: e.target.value }))}
-                />
+                <Input id="impact-date" type="date" value={impactForm.date} onChange={(e) => setImpactForm({ ...impactForm, date: e.target.value })} />
               </div>
               <div className="grid gap-1.5">
-                <Label htmlFor="impact-amount">金额</Label>
-                <Input
-                  id="impact-amount"
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  value={impactForm.amount}
-                  onChange={(e) => setImpactForm((prev) => ({ ...prev, amount: e.target.value }))}
-                />
+                <Label htmlFor="impact-amount">消费金额</Label>
+                <Input id="impact-amount" type="number" step="0.01" value={impactForm.amount} onChange={(e) => setImpactForm({ ...impactForm, amount: e.target.value })} placeholder="0.00" />
               </div>
-              <div className="grid gap-1.5">
-                <Label>支付账户</Label>
-                <Select
-                  value={impactForm.accountId || 'none'}
-                  onValueChange={(value) => setImpactForm((prev) => ({ ...prev, accountId: value === 'none' ? '' : value }))}
-                >
-                  <SelectTrigger className="w-[220px]">
-                    <SelectValue placeholder="选择账户" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">稍后确定</SelectItem>
-                    {accounts.map((account) => (
-                      <SelectItem key={account.id} value={account.id}>
-                        {account.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <Button variant="outline" onClick={() => void runImpact()} disabled={impactLoading}>
-                {impactLoading ? '评估中...' : '查看影响'}
+              <Button onClick={handleRunImpact} disabled={impactLoading}>
+                {impactLoading ? '评估中...' : '评估影响'}
               </Button>
             </div>
-
-            {impactResult ? (
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="rounded-lg border p-4">
-                  <p className="text-sm text-muted-foreground">基线最低余额</p>
-                  <p className="text-xl font-bold tabular-nums">¥{Math.round(impactResult.baseline.minBalance).toLocaleString()}</p>
-                  <p className="text-xs text-muted-foreground mt-1">日期 {impactResult.baseline.minDate}</p>
+            {impactResult && (
+              <div className="grid grid-cols-3 gap-3 mt-3">
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">基线最低余额</p>
+                  <p className="text-lg font-semibold tabular-nums">¥{Math.round(impactResult.baseline.minBalance).toLocaleString()}</p>
                 </div>
-                <div className="rounded-lg border p-4">
-                  <p className="text-sm text-muted-foreground">新增消费后最低余额</p>
-                  <p className={`text-xl font-bold tabular-nums ${impactResult.withExpense.minBalance < Number(safetyLine || 0) ? 'text-destructive' : 'text-foreground'}`}>
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">消费后最低余额</p>
+                  <p className={`text-lg font-semibold tabular-nums ${impactResult.withExpense.minBalance < 0 ? 'text-destructive' : ''}`}>
                     ¥{Math.round(impactResult.withExpense.minBalance).toLocaleString()}
                   </p>
-                  <p className="text-xs text-muted-foreground mt-1">日期 {impactResult.withExpense.minDate}</p>
                 </div>
-                <div className="rounded-lg border p-4">
-                  <p className="text-sm text-muted-foreground">最低余额变化</p>
-                  <p className="text-xl font-bold tabular-nums">
-                    ¥{Math.round(impactResult.delta.minBalance).toLocaleString()}
-                  </p>
-                  <p className="text-xs text-muted-foreground mt-1">
-                    期末余额变化 ¥{Math.round(impactResult.delta.endBalance).toLocaleString()}
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">余额差值</p>
+                  <p className="text-lg font-semibold tabular-nums text-destructive">
+                    -¥{Math.round(Math.abs(impactResult.delta.minBalance)).toLocaleString()}
                   </p>
                 </div>
               </div>
-            ) : (
-              <p className="text-sm text-muted-foreground">填入一笔消费后点击“查看影响”。</p>
             )}
           </CardContent>
         </Card>
 
+        {/* Savings Goal */}
         <Card>
-          <CardHeader>
-            <CardTitle>月度收支预测</CardTitle>
-            <CardDescription>基于收入预算和历史支出数据，预测未来月度现金流</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {monthlyProjectionTable.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-8">暂无收入预算数据，请在预算页设置收入预算后查看</p>
-            ) : (
-              <>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
-                  <div className="rounded-lg border p-3">
-                    <div className="flex items-center gap-2 mb-1">
-                      <TrendingUp className="size-4 text-success" />
-                      <span className="text-xs text-muted-foreground">预计总收入</span>
-                    </div>
-                    <p className="text-lg font-bold text-success tabular-nums">
-                      ¥{monthlyProjectionTable.reduce((s, d) => s + d.income, 0).toLocaleString()}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border p-3">
-                    <div className="flex items-center gap-2 mb-1">
-                      <TrendingDown className="size-4 text-destructive" />
-                      <span className="text-xs text-muted-foreground">预计总支出</span>
-                    </div>
-                    <p className="text-lg font-bold text-destructive tabular-nums">
-                      ¥{monthlyProjectionTable.reduce((s, d) => s + d.expense, 0).toLocaleString()}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border p-3">
-                    <div className="flex items-center gap-2 mb-1">
-                      <DollarSign className="size-4 text-primary" />
-                      <span className="text-xs text-muted-foreground">期末余额</span>
-                    </div>
-                    <p className="text-lg font-bold tabular-nums">
-                      ¥{monthlyProjectionTable.length > 0 ? monthlyProjectionTable[monthlyProjectionTable.length - 1].balance.toLocaleString() : '0'}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border p-3">
-                    <div className="flex items-center gap-2 mb-1">
-                      <TrendingDown className="size-4 text-yellow-500" />
-                      <span className="text-xs text-muted-foreground">最低余额</span>
-                    </div>
-                    <p className={`text-lg font-bold tabular-nums ${Math.min(...monthlyProjectionTable.map(d => d.balance)) < 0 ? 'text-destructive' : ''}`}>
-                      ¥{Math.min(...monthlyProjectionTable.map(d => d.balance)).toLocaleString()}
-                    </p>
-                  </div>
-                </div>
-                {monthlyProjectionTable.map(item => (
-                  <div key={item.month} className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 hover:bg-secondary/50 transition-colors">
-                    <div className="font-medium text-sm min-w-[80px]">{item.month}</div>
-                    <div className="flex items-center gap-4">
-                      <div className="text-right min-w-[80px]">
-                        <div className="text-xs text-muted-foreground">收入</div>
-                        <div className="text-sm font-medium text-success flex items-center justify-end gap-1">
-                          <ArrowUpRight className="size-3" />
-                          ¥{item.income.toLocaleString()}
-                        </div>
-                      </div>
-                      <div className="text-right min-w-[80px]">
-                        <div className="text-xs text-muted-foreground">支出</div>
-                        <div className="text-sm font-medium text-destructive flex items-center justify-end gap-1">
-                          <ArrowDownRight className="size-3" />
-                          ¥{item.expense.toLocaleString()}
-                        </div>
-                      </div>
-                      <div className="text-right min-w-[80px]">
-                        <div className="text-xs text-muted-foreground">净流入</div>
-                        <div className={`text-sm font-semibold ${item.netFlow >= 0 ? 'text-success' : 'text-destructive'}`}>
-                          {item.netFlow >= 0 ? '+' : ''}¥{item.netFlow.toLocaleString()}
-                        </div>
-                      </div>
-                      <div className="text-right min-w-[80px]">
-                        <div className="text-xs text-muted-foreground">累计余额</div>
-                        <div className="text-sm font-bold tabular-nums">¥{item.balance.toLocaleString()}</div>
-                      </div>
-                    </div>
-                  </div>
-                ))}
-              </>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>收入预算来源</CardTitle>
-            <CardDescription>以下收入预算参与了月度预测</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {monthlyProjections.length === 0 ? (
-              <p className="text-sm text-muted-foreground text-center py-8">暂无收入预算数据，请到预算页添加</p>
-            ) : (
-              <div className="space-y-2">
-                {monthlyProjections.slice(0, 10).map((p, idx) => (
-                  <div key={idx} className="flex items-center justify-between py-2 border-b border-border last:border-0">
-                    <div>
-                      <div className="font-medium text-sm">{p.name}</div>
-                      <div className="text-xs text-muted-foreground">{p.projectionDate}</div>
-                    </div>
-                    <Badge variant="secondary" className="text-success bg-success/10">
-                      +¥{p.amount.toLocaleString()}
-                    </Badge>
-                  </div>
-                ))}
-                {monthlyProjections.length > 10 && (
-                  <div className="text-center text-sm text-muted-foreground pt-2">
-                    还有 {monthlyProjections.length - 10} 条收入记录...
-                  </div>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-start justify-between gap-4">
+          <CardHeader className="flex flex-row items-center justify-between">
             <div>
-              <CardTitle className="flex items-center gap-2">
-                <Target className="size-5 text-primary" />
-                储蓄目标追踪
-              </CardTitle>
-              <CardDescription>设定储蓄目标，根据预测曲线追踪缺口</CardDescription>
+              <CardTitle>储蓄目标</CardTitle>
+              <CardDescription>设置储蓄目标金额与截止日期</CardDescription>
             </div>
-            {savingsGoal && (
-              <div className="flex items-center gap-2">
-                <Button variant="outline" size="sm" onClick={() => setGoalFormOpen(true)}>
-                  <Edit2 className="size-3.5" />
-                  调整
-                </Button>
-                <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={handleDeleteGoal}>
-                  <Trash2 className="size-3.5" />
-                  清除
-                </Button>
-              </div>
-            )}
-          </CardHeader>
-          <CardContent>
-            {!savingsGoal && !goalFormOpen ? (
-              <div className="flex flex-col items-center justify-center py-8 text-center">
-                <Target className="size-10 text-muted-foreground/30 mb-3" />
-                <p className="text-sm text-muted-foreground mb-4">还没有设定储蓄目标</p>
-                <Button variant="outline" onClick={() => setGoalFormOpen(true)}>
-                  <Plus className="size-4" />
-                  设定目标
-                </Button>
-              </div>
-            ) : goalFormOpen ? (
-              <div className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="goal-amount">目标金额 (¥)</Label>
-                    <Input
-                      id="goal-amount"
-                      type="number"
-                      min="0"
-                      step="100"
-                      value={goalForm.targetAmount}
-                      onChange={(e) => setGoalForm(prev => ({ ...prev, targetAmount: e.target.value }))}
-                      placeholder={savingsGoal ? String(savingsGoal.targetAmount) : '如：100000'}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="goal-deadline">截止日期</Label>
-                    <Input
-                      id="goal-deadline"
-                      type="date"
-                      value={goalForm.deadline}
-                      onChange={(e) => setGoalForm(prev => ({ ...prev, deadline: e.target.value }))}
-                    />
-                  </div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <Button onClick={handleSaveGoal}>
-                    {savingsGoal ? '更新目标' : '保存目标'}
-                  </Button>
-                  {savingsGoal && (
-                    <Button variant="outline" onClick={resetGoalForm}>取消</Button>
-                  )}
-                </div>
-              </div>
-            ) : savingsGoal && goalAnalysis ? (
-              <div className="space-y-4">
-                {/* 进度条 */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-sm text-muted-foreground">储蓄进度</span>
-                    <span className="text-sm font-semibold tabular-nums">{goalAnalysis.progress}%</span>
-                  </div>
-                  <div className="h-3 bg-secondary rounded-full overflow-hidden">
-                    <div
-                      className="h-full rounded-full transition-all duration-500"
-                      style={{
-                        width: `${goalAnalysis.progress}%`,
-                        background: goalAnalysis.progress >= 100
-                          ? 'linear-gradient(90deg, #2BA7A0, #47C9A0)'
-                          : 'linear-gradient(90deg, #3B82F6, #6366F1)',
-                      }}
-                    />
-                  </div>
-                </div>
-
-                {/* 核心数据卡片 */}
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-                  <div className="rounded-lg border p-3">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Target className="size-4 text-primary" />
-                      <span className="text-xs text-muted-foreground">目标金额</span>
-                    </div>
-                    <p className="text-lg font-bold tabular-nums">
-                      ¥{savingsGoal.targetAmount.toLocaleString()}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border p-3">
-                    <div className="flex items-center gap-2 mb-1">
-                      <TrendingUp className="size-4 text-success" />
-                      <span className="text-xs text-muted-foreground">预测期末余额</span>
-                    </div>
-                    <p className="text-lg font-bold text-success tabular-nums">
-                      ¥{Math.round(goalAnalysis.endBalance).toLocaleString()}
-                    </p>
-                  </div>
-                  <div className="rounded-lg border p-3">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Calendar className="size-4 text-muted-foreground" />
-                      <span className="text-xs text-muted-foreground">截止日期</span>
-                    </div>
-                    <p className="text-lg font-bold tabular-nums">{savingsGoal.deadline}</p>
-                  </div>
-                  <div className={`rounded-lg border p-3 ${goalAnalysis.gap > 0 ? 'border-destructive/30' : 'border-success/30'}`}>
-                    <div className="flex items-center gap-2 mb-1">
-                      {goalAnalysis.gap > 0 ? (
-                        <TrendingDown className="size-4 text-destructive" />
-                      ) : (
-                        <TrendingUp className="size-4 text-success" />
-                      )}
-                      <span className="text-xs text-muted-foreground">缺口</span>
-                    </div>
-                    <p className={`text-lg font-bold tabular-nums ${goalAnalysis.gap > 0 ? 'text-destructive' : 'text-success'}`}>
-                      {goalAnalysis.gap > 0
-                        ? `差 ¥${Math.round(goalAnalysis.gap).toLocaleString()}`
-                        : '可达成'}
-                    </p>
-                  </div>
-                </div>
-
-                {/* 每月需多存（仅缺口>0时显示） */}
-                {goalAnalysis.gap > 0 && (
-                  <div className="rounded-lg bg-secondary/30 p-4">
-                    <div className="flex items-center gap-2 mb-2">
-                      <DollarSign className="size-4 text-primary" />
-                      <span className="font-medium text-sm">达成建议</span>
-                    </div>
-                    <p className="text-sm text-muted-foreground">
-                      距离 <strong>{savingsGoal.deadline}</strong> 还有约 <strong>{goalAnalysis.monthsRemaining} 个月</strong>，
-                      每个月需额外储蓄 <strong className="text-primary">¥{goalAnalysis.monthlyExtra.toLocaleString()}</strong> 才能达成目标。
-                    </p>
-                    <p className="text-xs text-muted-foreground mt-2">
-                      当前每月净流入参考下方「月度收支预测」的净流入列。
-                    </p>
-                  </div>
-                )}
-              </div>
-            ) : null}
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader className="flex flex-row items-start justify-between gap-4">
-            <div>
-              <CardTitle>预估支出管理</CardTitle>
-              <CardDescription>录入尚未发生但已计划的消费，预测时会按现金流日纳入未来支出</CardDescription>
-            </div>
-            <Button onClick={openCreateDialog} size="sm">
-              <Plus className="size-4" />
-              新增预估支出
+            <Button variant="outline" size="sm" onClick={() => { setGoalForm({ targetAmount: '', deadline: '' }); setGoalFormOpen(true); }}>
+              {savingsGoal ? '编辑' : '设置'}
             </Button>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {sortedPlannedExpenses.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-6 text-center">暂无预估支出</p>
-            ) : (
-              sortedPlannedExpenses.map((item) => (
-                <div key={item.id} className="flex items-start justify-between gap-3 rounded-lg border p-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium">{item.name}</p>
-                      <Badge variant="outline" className="text-xs">{item.category}</Badge>
-                    </div>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      预计消费日 {item.plannedDate}
-                      {item.accountId ? ` · ${accounts.find((account) => account.id === item.accountId)?.name || '未知账户'}` : ' · 未指定账户'}
-                    </p>
-                    {item.cashOutDate && item.cashOutDate !== item.plannedDate && (
-                      <p className="text-xs text-muted-foreground mt-1">现金流出日 {item.cashOutDate}</p>
-                    )}
-                    {item.note && <p className="text-xs text-muted-foreground mt-1">{item.note}</p>}
-                  </div>
-                  <div className="flex items-start gap-3">
-                    <p className="font-semibold text-destructive tabular-nums pt-1">¥{item.amount.toLocaleString()}</p>
-                    <div className="flex items-center gap-1">
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8"
-                        onClick={() => void evaluatePlannedExpense(item)}
-                        aria-label="评估预估支出"
-                      >
-                        <TrendingUp className="size-3.5" />
-                      </Button>
-                      <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => openEditDialog(item)} aria-label="编辑预估支出">
-                        <Pencil className="size-3.5" />
-                      </Button>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="h-8 w-8 text-destructive hover:text-destructive"
-                        onClick={() => setDeleteTarget(item)}
-                        aria-label="删除预估支出"
-                      >
-                        <Trash2 className="size-3.5" />
-                      </Button>
-                    </div>
-                  </div>
+          <CardContent>
+            {savingsGoal ? (
+              <div className="flex items-center justify-between">
+                <div>
+                  <p className="text-lg font-semibold tabular-nums">¥{savingsGoal.targetAmount.toLocaleString()}</p>
+                  <p className="text-sm text-muted-foreground">截止 {savingsGoal.deadline}</p>
                 </div>
-              ))
+                <Button variant="ghost" size="sm" className="text-destructive" onClick={handleDeleteGoal}>删除</Button>
+              </div>
+            ) : (
+              <p className="text-sm text-muted-foreground">尚未设置储蓄目标</p>
             )}
           </CardContent>
         </Card>
 
+        {/* Planned Expenses */}
         <Card>
-          <CardHeader>
-            <CardTitle>本范围内预期支出</CardTitle>
-            <CardDescription>合计 ¥{expectedOutflow.toLocaleString()}</CardDescription>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle>预估支出</CardTitle>
+              <CardDescription>手动添加的预估支出项目</CardDescription>
+            </div>
+            <Button size="sm" onClick={() => openPlannedDialog()}><Plus className="size-3.5 mr-1.5" />添加</Button>
           </CardHeader>
-          <CardContent className="space-y-3">
-            {forecastItems.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-6 text-center">暂无预期支出</p>
+          <CardContent>
+            {futurePlannedExpenses.length === 0 ? (
+              <p className="text-sm text-muted-foreground py-8 text-center">暂无预估支出</p>
             ) : (
-              forecastItems.map((item) => (
-                <div key={item.id} className="flex items-start justify-between gap-3 rounded-lg border p-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <p className="font-medium">{item.title}</p>
-                      <Badge variant="outline" className="text-xs">
-                        {item.type === 'budget'
-                          ? '预算结算'
-                          : item.type === 'installment'
-                            ? '分期账单'
-                            : item.type === 'planned'
-                              ? '预估支出'
-                              : '未来支出'}
-                      </Badge>
+              <div className="divide-y">
+                {futurePlannedExpenses.map((item) => (
+                  <div key={item.id} className="flex items-center justify-between py-3">
+                    <div className="min-w-0">
+                      <p className="text-sm font-medium truncate">{item.name}</p>
+                      <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
+                        <span>{item.plannedDate}</span>
+                        <Badge variant="outline" className="text-[10px]">{item.category}</Badge>
+                        <span>{accounts.find(a => a.id === item.accountId)?.name || ''}</span>
+                      </div>
                     </div>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      {item.date}
-                      {item.accountId ? ` · ${accounts.find((account) => account.id === item.accountId)?.name || '未知账户'}` : ''}
-                    </p>
-                    {'originalDate' in item && item.originalDate && item.originalDate !== item.date && (
-                      <p className="text-xs text-muted-foreground mt-1">
-                        消费日 {item.originalDate}，现金流出日 {item.date}
-                      </p>
-                    )}
-                    {item.note && item.note !== item.title && (
-                      <p className="text-xs text-muted-foreground mt-1">{item.note}</p>
-                    )}
+                    <div className="flex items-center gap-3 ml-3 shrink-0">
+                      <span className="text-sm font-semibold tabular-nums text-destructive">
+                        -¥{Math.abs(item.amount).toLocaleString()}
+                      </span>
+                      <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openPlannedDialog(item.id)}>
+                        <Pencil className="size-3" />
+                      </Button>
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-destructive" onClick={() => setDeleteTarget(item)}>
+                        <Trash2 className="size-3" />
+                      </Button>
+                    </div>
                   </div>
-                  <p className="font-semibold text-destructive tabular-nums">¥{item.amount.toLocaleString()}</p>
-                </div>
-              ))
+                ))}
+              </div>
             )}
           </CardContent>
         </Card>
       </main>
 
+      {/* Planned Expense Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-[480px] max-h-[85dvh] overflow-y-auto">
-          <form onSubmit={handleSubmit}>
+        <DialogContent>
+          <form onSubmit={handlePlannedSubmit}>
             <DialogHeader>
-              <DialogTitle>{editingId ? '编辑预估支出' : '新增预估支出'}</DialogTitle>
-              <DialogDescription>这类支出不会立即进入真实流水，只参与未来现金流预测</DialogDescription>
+              <DialogTitle>{editingId ? '编辑预估支出' : '添加预估支出'}</DialogTitle>
+              <DialogDescription>手动添加一笔未来可能发生的支出</DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">
               <div className="grid gap-1.5">
-                <Label htmlFor="planned-name">名称</Label>
-                <Input
-                  id="planned-name"
-                  value={form.name}
-                  onChange={(e) => setForm((prev) => ({ ...prev, name: e.target.value }))}
-                  placeholder="如：8 月显示器采购"
-                />
+                <Label>名称</Label>
+                <Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="如：年底旅行" required />
               </div>
               <div className="grid gap-1.5">
-                <Label htmlFor="planned-amount">金额</Label>
-                <Input
-                  id="planned-amount"
-                  type="number"
-                  min="0.01"
-                  step="0.01"
-                  value={form.amount}
-                  onChange={(e) => setForm((prev) => ({ ...prev, amount: e.target.value }))}
-                  placeholder="0.00"
-                />
+                <Label>金额</Label>
+                <Input type="number" step="0.01" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} placeholder="0.00" required />
               </div>
               <div className="grid gap-1.5">
-                <Label htmlFor="planned-date">预计消费日</Label>
-                <Input
-                  id="planned-date"
-                  type="date"
-                  value={form.plannedDate}
-                  onChange={(e) => setForm((prev) => ({ ...prev, plannedDate: e.target.value }))}
-                />
+                <Label>日期</Label>
+                <Input type="date" value={form.plannedDate} onChange={(e) => setForm({ ...form, plannedDate: e.target.value })} />
               </div>
               <div className="grid gap-1.5">
-                <Label>支付账户</Label>
-                <Select
-                  value={form.accountId || 'none'}
-                  onValueChange={(value) => setForm((prev) => ({ ...prev, accountId: value === 'none' ? '' : value }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="选择账户" />
-                  </SelectTrigger>
+                <Label>账户</Label>
+                <Select value={form.accountId} onValueChange={(v) => setForm({ ...form, accountId: v })}>
+                  <SelectTrigger><SelectValue placeholder="选账户" /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="none">稍后确定</SelectItem>
-                    {accounts.map((account) => (
-                      <SelectItem key={account.id} value={account.id}>
-                        {account.name}
-                      </SelectItem>
+                    {accounts.map((a) => (
+                      <SelectItem key={a.id} value={a.id}>{a.name}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
               <div className="grid gap-1.5">
                 <Label>分类</Label>
-                <Select
-                  value={form.category}
-                  onValueChange={(value) => setForm((prev) => ({ ...prev, category: value as TransactionCategory }))}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
+                <Select value={form.category} onValueChange={(v) => setForm({ ...form, category: v as TransactionCategory })}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    {DEFAULT_CATEGORIES.map((category) => (
-                      <SelectItem key={category} value={category}>
-                        {category}
-                      </SelectItem>
+                    {DEFAULT_CATEGORIES.map((c: any) => (
+                      <SelectItem key={c.value || c} value={c.value || c}>{c.label || c}</SelectItem>
                     ))}
                   </SelectContent>
                 </Select>
               </div>
               <div className="grid gap-1.5">
-                <Label htmlFor="planned-note">备注</Label>
-                <Textarea
-                  id="planned-note"
-                  value={form.note}
-                  onChange={(e) => setForm((prev) => ({ ...prev, note: e.target.value }))}
-                  rows={3}
-                  placeholder="可填写用途、预期品牌、是否可推迟等"
-                />
+                <Label>备注</Label>
+                <Input value={form.note} onChange={(e) => setForm({ ...form, note: e.target.value })} />
               </div>
             </div>
             <DialogFooter>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setDialogOpen(false);
-                  resetForm();
-                }}
-              >
-                取消
-              </Button>
-              <Button type="submit">{editingId ? '更新' : '创建'}</Button>
+              <Button type="submit">{editingId ? '更新' : '添加'}</Button>
             </DialogFooter>
           </form>
         </DialogContent>
       </Dialog>
 
+      {/* Delete Confirm */}
       <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>删除预估支出</AlertDialogTitle>
-            <AlertDialogDescription>删除后将不再参与未来现金流预测，真实流水不会受影响。</AlertDialogDescription>
+            <AlertDialogTitle>确认删除</AlertDialogTitle>
+            <AlertDialogDescription>确定要删除 "{deleteTarget?.name}" 吗？</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => void handleDelete()}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
-              删除
-            </AlertDialogAction>
+            <AlertDialogCancel onClick={() => setDeleteTarget(null)}>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={handlePlannedDelete} className="bg-destructive">删除</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+
+      {/* Goal Dialog */}
+      <Dialog open={goalFormOpen} onOpenChange={setGoalFormOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>设置储蓄目标</DialogTitle>
+            <DialogDescription>输入目标金额与截止日期</DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4 py-4">
+            <div className="grid gap-1.5">
+              <Label>目标金额</Label>
+              <Input type="number" step="0.01" value={goalForm.targetAmount} onChange={(e) => setGoalForm({ ...goalForm, targetAmount: e.target.value })} placeholder="0.00" />
+            </div>
+            <div className="grid gap-1.5">
+              <Label>截止日期</Label>
+              <Input type="date" value={goalForm.deadline} onChange={(e) => setGoalForm({ ...goalForm, deadline: e.target.value })} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button onClick={handleSaveGoal}>保存</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

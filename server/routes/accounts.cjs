@@ -29,6 +29,65 @@ router.get('/', (req, res) => {
   }
 });
 
+// GET /api/accounts/:id/debt — 账户负债聚合信息
+router.get('/:id/debt', (req, res) => {
+  try {
+    const db = getDatabase();
+    const account = db.prepare('SELECT * FROM accounts WHERE id = ?').get(req.params.id);
+    if (!account) {
+      return res.status(404).json({ success: false, error: '账户不存在' });
+    }
+
+    const today = new Date().toISOString().slice(0, 10);
+    let totalDebt = 0;
+    let installmentMonthlyPayment = 0;
+    let installmentTotalPeriods = 0;
+
+    // 1. 分期债务：transaction_type='installment_bill' 且 cash_out_date > today 的未来期数
+    const installmentRows = db.prepare(`
+      SELECT amount, installment_index, installment_total, installment_fee, cash_out_date, date
+      FROM transactions
+      WHERE account_id = ? AND transaction_type = 'installment_bill'
+    `).all(req.params.id);
+
+    installmentRows.forEach((row) => {
+      const cashOutDate = row.cash_out_date || row.date;
+      if (cashOutDate > today) {
+        // 未来未还债务
+        totalDebt += Math.abs(row.amount);
+        installmentMonthlyPayment += Math.abs(row.amount); // 每期金额即月供
+        if (row.installment_total) {
+          installmentTotalPeriods = Math.max(installmentTotalPeriods, row.installment_total - (row.installment_index || 0) + 1);
+        }
+      }
+    });
+
+    // 2. 非分期信用消费：credit_card/credit 类型支出且 cash_out_date > today 的未到期还款
+    const creditSpend = db.prepare(`
+      SELECT amount, cash_out_date, date
+      FROM transactions
+      WHERE account_id = ? AND type = 'credit' AND cash_out_date > ?
+    `).all(req.params.id, today);
+
+    creditSpend.forEach((row) => {
+      totalDebt += Math.abs(row.amount);
+    });
+
+    res.json({
+      success: true,
+      data: {
+        accountId: req.params.id,
+        totalDebt,
+        installmentMonthlyPayment,
+        installmentTotalPeriods,
+      },
+    });
+  } catch (err) {
+    console.error('[accounts] GET /:id/debt error:', err.message);
+    res.status(500).json({ success: false, error: '获取账户负债信息失败' });
+  }
+});
+
 // GET /api/accounts/:id — 获取单个账户
 router.get('/:id', (req, res) => {
   try {
@@ -186,6 +245,9 @@ function mapAccount(row) {
     billingDay: row.billing_day,
     repaymentDay: row.repayment_day,
     note: row.note || '',
+    totalDebt: row.total_debt ?? 0,
+    installmentTotalPeriods: row.installment_total_periods ?? 0,
+    installmentMonthlyPayment: row.installment_monthly_payment ?? 0,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

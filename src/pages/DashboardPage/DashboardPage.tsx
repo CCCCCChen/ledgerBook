@@ -12,6 +12,10 @@ import { CHART_COLORS } from '@/lib/chart-colors';
 import { DEFAULT_CATEGORIES, EXPENSE_ATTRIBUTE_LABELS } from '@/data/finance';
 import type { ITransaction, IAccount, ExpenseAttribute } from '@/types/finance';
 import { loadAccounts, loadBudgets, loadTransactions } from '@/lib/data-service';
+import SummaryCards from './SummaryCards';
+import BudgetProgress from './BudgetProgress';
+import AlertPanel from './AlertPanel';
+import RecentTransactions from './RecentTransactions';
 import { formatLocalISODate, formatLocalISOYearMonth } from '@/lib/date';
 import { getEffectiveTransactionDate } from '@/lib/cashflow';
 
@@ -523,6 +527,10 @@ export default function DashboardPage() {
     };
   }, [filteredTransactions, accounts]);
 
+  // ==========================================
+  // Render
+  // ==========================================
+
   return (
     <div className="min-h-screen bg-background">
       <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6">
@@ -541,31 +549,25 @@ export default function DashboardPage() {
           </Tabs>
         </div>
 
-        {/* ② 日期范围 + 统计口径控制卡片 */}
+        {/* ② 日期范围 + 统计口径 */}
         <Card>
-          <CardContent className="pt-6 flex flex-col md:flex-row md:items-end md:justify-between gap-4">
-            <div>
-              <p className="font-medium">查看范围</p>
-              <p className="text-sm text-muted-foreground">{rangeFrom} ~ {rangeTo}</p>
-            </div>
-            <div className="flex flex-wrap items-end gap-3">
-              <div className="grid gap-1.5">
-                <Label htmlFor="stats-from">开始</Label>
-                <Input id="stats-from" type="date" value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} />
+          <CardContent className="p-4">
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 items-end">
+              <div>
+                <Label>起始日期</Label>
+                <Input type="date" value={rangeFrom} onChange={(e) => setRangeFrom(e.target.value)} />
               </div>
-              <div className="grid gap-1.5">
-                <Label htmlFor="stats-to">结束</Label>
-                <Input id="stats-to" type="date" value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} />
+              <div>
+                <Label>结束日期</Label>
+                <Input type="date" value={rangeTo} onChange={(e) => setRangeTo(e.target.value)} />
               </div>
-              <div className="grid gap-1.5">
-                <Label htmlFor="stats-mode">统计口径</Label>
-                <Select value={timelineMode} onValueChange={(value) => setTimelineMode(value as TimelineMode)}>
-                  <SelectTrigger id="stats-mode" className="w-[140px]">
-                    <SelectValue />
-                  </SelectTrigger>
+              <div>
+                <Label>统计口径</Label>
+                <Select value={timelineMode} onValueChange={(v) => setTimelineMode(v as TimelineMode)}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="expense">消费日</SelectItem>
-                    <SelectItem value="cashflow">现金流日</SelectItem>
+                    <SelectItem value="expense">自然支出</SelectItem>
+                    <SelectItem value="cashflow">实际现金流</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
@@ -574,245 +576,72 @@ export default function DashboardPage() {
         </Card>
 
         {/* ③ 财务状态概览 */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Wallet className="size-5 text-primary" />
-              财务状态概览
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-2 md:grid-cols-4 xl:grid-cols-6 gap-4">
-              <Card className="col-span-2 md:col-span-1">
-                <CardHeader className="pb-2">
-                  <CardDescription>收入</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-2xl font-bold tabular-nums text-success">¥{financialOverview.income.toFixed(0).toLocaleString()}</p>
-                </CardContent>
-              </Card>
-
-              <Card className="col-span-2 md:col-span-1">
-                <CardHeader className="pb-2">
-                  <CardDescription>支出</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-2xl font-bold tabular-nums text-destructive">¥{financialOverview.expenses.toFixed(0).toLocaleString()}</p>
-                </CardContent>
-              </Card>
-
-              <Card className="col-span-2 md:col-span-1">
-                <CardHeader className="pb-2">
-                  <CardDescription>储蓄率</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className={`text-2xl font-bold tabular-nums ${financialOverview.savingRate >= 20 ? 'text-success' : financialOverview.savingRate >= 10 ? '' : 'text-destructive'}`}>{financialOverview.savingRate}%</p>
-                </CardContent>
-              </Card>
-
-              <Card className="col-span-2 md:col-span-1">
-                <CardHeader className="pb-2">
-                  <CardDescription>必要支出</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-lg font-semibold tabular-nums">¥{financialOverview.rigidExpenses.toFixed(0).toLocaleString()}</p>
-                </CardContent>
-              </Card>
-
-              <Card className="col-span-2 md:col-span-1">
-                <CardHeader className="pb-2">
-                  <CardDescription>弹性支出</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-lg font-semibold tabular-nums">¥{financialOverview.flexibleExpenses.toFixed(0).toLocaleString()}</p>
-                </CardContent>
-              </Card>
-
-              <Card className="col-span-2 md:col-span-1">
-                <CardHeader className="pb-2">
-                  <CardDescription>现金安全</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className={`text-lg font-semibold tabular-nums ${financialOverview.cashSafetyMonths >= 6 ? 'text-success' : financialOverview.cashSafetyMonths >= 3 ? '' : 'text-destructive'}`}>{financialOverview.cashSafetyMonths} 月</p>
-                </CardContent>
-              </Card>
-
-              <Card className="col-span-2 md:col-span-1">
-                <CardHeader className="pb-2">
-                  <CardDescription>负债压力</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className={`text-lg font-semibold tabular-nums ${financialOverview.debtPressure > 30 ? 'text-destructive' : ''}`}>{financialOverview.debtPressure}%</p>
-                </CardContent>
-              </Card>
-
-              <Card className="col-span-2 md:col-span-1">
-                <CardHeader className="pb-2">
-                  <CardDescription>预算状态</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className={`text-lg font-semibold ${financialOverview.budgetStatus === '超支' ? 'text-destructive' : 'text-success'}`}>{financialOverview.budgetStatus}</p>
-                </CardContent>
-              </Card>
-
-              <Card className="col-span-2 md:col-span-1">
-                <CardHeader className="pb-2">
-                  <CardDescription>信用负债</CardDescription>
-                </CardHeader>
-                <CardContent>
-                  <p className="text-lg font-semibold tabular-nums text-destructive">¥{financialOverview.totalDebt.toFixed(0).toLocaleString()}</p>
-                </CardContent>
-              </Card>
-            </div>
-          </CardContent>
-        </Card>
+        <SummaryCards overview={financialOverview} />
 
         {/* ④ 本月环比 */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <TrendingUp className="size-5 text-primary" />
-              本月环比
-            </CardTitle>
-            <CardDescription>与上月的对比变化</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="grid grid-cols-3 gap-4">
-              <div className="text-center">
-                <p className="text-sm text-muted-foreground">收入</p>
-                <p className={`text-xl font-bold ${monthOverMonth.incomeChange >= 0 ? 'text-success' : 'text-destructive'}`}>
-                  {monthOverMonth.incomeChange >= 0 ? '+' : ''}{monthOverMonth.incomeChange.toFixed(1)}%
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">本月 ¥{monthOverMonth.thisIncome.toFixed(0)} vs 上月 ¥{monthOverMonth.lastIncome.toFixed(0)}</p>
-              </div>
-              <div className="text-center">
-                <p className="text-sm text-muted-foreground">支出</p>
-                <p className={`text-xl font-bold ${monthOverMonth.expenseChange <= 0 ? 'text-success' : 'text-destructive'}`}>
-                  {monthOverMonth.expenseChange >= 0 ? '+' : ''}{monthOverMonth.expenseChange.toFixed(1)}%
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">本月 ¥{monthOverMonth.thisExpense.toFixed(0)} vs 上月 ¥{monthOverMonth.lastExpense.toFixed(0)}</p>
-              </div>
-              <div className="text-center">
-                <p className="text-sm text-muted-foreground">储蓄</p>
-                <p className={`text-xl font-bold ${monthOverMonth.savingChange >= 0 ? 'text-success' : 'text-destructive'}`}>
-                  {monthOverMonth.savingChange >= 0 ? '+' : ''}{monthOverMonth.savingChange.toFixed(1)}%
-                </p>
-                <p className="text-xs text-muted-foreground mt-1">本月 ¥{(monthOverMonth.thisIncome - monthOverMonth.thisExpense).toFixed(0)} vs 上月 ¥{(monthOverMonth.lastIncome - monthOverMonth.lastExpense).toFixed(0)}</p>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
+        {monthOverMonth && (
+          <Card>
+            <CardHeader><CardTitle className="text-base">本月环比</CardTitle></CardHeader>
+            <CardContent className="space-y-2 text-sm">
+              <div className="flex justify-between"><span>本月收入</span><span className="font-semibold">¥{monthOverMonth.thisIncome.toLocaleString()}</span></div>
+              <div className="flex justify-between"><span>上月收入</span><span className="font-semibold">¥{monthOverMonth.lastIncome.toLocaleString()}</span></div>
+              <div className="flex justify-between"><span>本月支出</span><span className="font-semibold">¥{monthOverMonth.thisExpense.toLocaleString()}</span></div>
+              <div className="flex justify-between"><span>上月支出</span><span className="font-semibold">¥{monthOverMonth.lastExpense.toLocaleString()}</span></div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* ⑤ 预警中心 */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <AlertTriangle className="size-5 text-primary" />
-              预警中心
-            </CardTitle>
-            <CardDescription>汇总超支、风险、大额支出等信息</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {alerts.length > 0 ? (
-              alerts.map((alert, i) => (
-                <Alert key={i} variant={alert.severity === 'high' ? 'destructive' : 'default'}>
-                  <AlertTitle className="flex items-center gap-2">
-                    {alert.title}
-                    <Badge variant={alert.severity === 'high' ? 'destructive' : 'secondary'}>
-                      {alert.severity === 'high' ? '高风险' : alert.severity === 'medium' ? '关注' : '提示'}
-                    </Badge>
-                  </AlertTitle>
-                  <AlertDescription>{alert.description}</AlertDescription>
-                </Alert>
-              ))
-            ) : (
-              <p className="text-sm text-muted-foreground text-center py-8">当前无风险预警，财务状况良好</p>
-            )}
-          </CardContent>
-        </Card>
+        <AlertPanel alerts={alerts} />
 
         {/* ⑥ 本月预算执行 */}
-        <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <BarChart3 className="size-5 text-primary" />
-              本月预算执行
-            </CardTitle>
-            <CardDescription>各品类预算使用进度（仅显示已设预算的品类）</CardDescription>
-          </CardHeader>
-          <CardContent>
-            {budgetProgressData.length > 0 ? (
-              <div className="space-y-4">
-                {budgetProgressData.map((item: any) => {
-                  const progressColor = item.progress >= 100 ? 'bg-destructive' : item.progress >= 80 ? 'bg-yellow-500' : 'bg-success';
-                  return (
-                    <div key={item.category}>
-                      <div className="flex justify-between text-sm mb-1">
-                        <span>{item.category}</span>
-                        <span className={item.progress >= 100 ? 'text-destructive font-medium' : 'text-muted-foreground'}>
-                          ¥{item.actualAmount.toFixed(0)} / ¥{item.budgetAmount.toFixed(0)}
-                        </span>
-                      </div>
-                      <div className="w-full bg-secondary rounded-full h-2">
-                        <div className={`h-2 rounded-full transition-all ${progressColor}`} style={{ width: `${item.progress}%` }} />
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="text-sm text-muted-foreground text-center py-8">暂无预算数据，前往预算页设置</p>
-            )}
-          </CardContent>
-        </Card>
+        <BudgetProgress budgetData={budgetProgressData} />
 
         {/* ⑦ 分类支出分布 */}
         <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <PieChart className="size-5 text-primary" />
-              分类支出分布
-            </CardTitle>
-            <CardDescription>鼠标悬停查看各分类的详细记录</CardDescription>
-          </CardHeader>
+          <CardHeader><CardTitle className="text-base">分类支出分布</CardTitle></CardHeader>
           <CardContent>
-            <ReactECharts option={categoryPieChartOption} style={{ height: 400 }} />
+            {categoryPieChartOption ? (
+              <ReactECharts option={categoryPieChartOption} style={{ height: 320 }} />
+            ) : (
+              <p className="text-muted-foreground text-sm text-center py-8">暂无数据</p>
+            )}
           </CardContent>
         </Card>
 
         {/* ⑧ 账户支出对比 */}
         <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <BarChart3 className="size-5 text-primary" />
-              账户支出对比
-            </CardTitle>
-            <CardDescription>鼠标悬停查看各账户的详细记录</CardDescription>
-          </CardHeader>
+          <CardHeader><CardTitle className="text-base">账户支出对比</CardTitle></CardHeader>
           <CardContent>
-            <ReactECharts option={accountBarChartOption} style={{ height: 400 }} />
+            {accountBarChartOption ? (
+              <ReactECharts option={accountBarChartOption} style={{ height: 320 }} />
+            ) : (
+              <p className="text-muted-foreground text-sm text-center py-8">暂无数据</p>
+            )}
           </CardContent>
         </Card>
 
         {/* ⑨ 财务趋势 */}
         <Card>
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <TrendingUp className="size-5 text-primary" />
-              财务趋势
-            </CardTitle>
-            <CardDescription>最近 6 个月收入、支出、储蓄趋势，鼠标悬停查看详细记录</CardDescription>
-          </CardHeader>
+          <CardHeader><CardTitle className="text-base">财务趋势</CardTitle></CardHeader>
           <CardContent>
-            <ReactECharts option={trendChartOption} style={{ height: 400 }} />
+            {trendChartOption ? (
+              <ReactECharts option={trendChartOption} style={{ height: 320 }} />
+            ) : (
+              <p className="text-muted-foreground text-sm text-center py-8">暂无数据</p>
+            )}
           </CardContent>
         </Card>
+
+        {/* ⑩ 最近交易 */}
+        <RecentTransactions transactions={filteredTransactions} accounts={accounts} />
       </main>
     </div>
   );
 }
 
-// 辅助函数：推断支出属性
+// ==========================================
+
 function inferExpenseAttribute(txn: Partial<ITransaction>): ExpenseAttribute {
   if (txn.expenseAttribute) return txn.expenseAttribute;
 

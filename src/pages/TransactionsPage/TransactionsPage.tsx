@@ -1,36 +1,8 @@
-import { useState, useMemo, useCallback, useEffect, type FormEvent, type ChangeEvent } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { toast } from 'sonner';
-import { Plus, Download, Upload, Search, Filter, X, Pencil, Trash2, ArrowUpDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
-import { Switch } from '@/components/ui/switch';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -41,142 +13,190 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
-import type { IAccount, IBudget, ITransaction, TransactionCategory, TransactionType, ExpenseAttribute } from '@/types/finance';
-import { DEFAULT_CATEGORIES, ACCOUNT_TYPE_LABELS, EXPENSE_ATTRIBUTE_LABELS } from '@/data/finance';
-import { exportAllData, importAllData } from '@/lib/storage';
-import { createTransaction, deleteTransaction, loadAccounts, loadBudgets, loadTransactions, updateTransaction } from '@/lib/data-service';
-import { getElectronAPI, isElectronRuntime } from '@/lib/electron-api';
-import { formatLocalISODate, nowLocalISODate } from '@/lib/date';
-import { forecastApi } from '@/api';
+import { FileDown, FileUp, Plus } from 'lucide-react';
+import {
+  loadTransactions,
+  loadAccounts,
+  loadBudgets,
+  createTransaction,
+  updateTransaction,
+  deleteTransaction,
+} from '@/lib/data-service';
+import { forecastApi } from '@/lib/data-service';
+import type { ITransaction, IAccount, ExpenseAttribute, TransactionCategory } from '@/types/finance';
+import { TransactionForm } from './TransactionForm';
+import { TransactionTable } from './TransactionTable';
+import { TransactionFilters } from './TransactionFilters';
 
-const CATEGORIES: TransactionCategory[] = DEFAULT_CATEGORIES;
-const IS_ELECTRON = isElectronRuntime();
-const TRANSACTION_TYPE_LABELS: Record<TransactionType, string> = {
-  normal: '普通收支',
-  repayment_out: '还款扣款',
-  repayment_in: '还款入账',
-  installment_bill: '分期账单',
-  income: '收入',
-};
+// ============================================================
+// Types & Constants
+// ============================================================
 
-interface TransactionFormData {
+export interface TransactionFormData {
   date: string;
-  transactionType: 'normal' | 'repayment_out' | 'installment_bill';
-  accountId: string;
-  repaymentTargetAccountId: string;
   amount: string;
   isExpense: boolean;
-  installmentCount: string;
-  editScope: 'single' | 'plan';
-  feeTotal: string;
-  category: TransactionCategory;
-  expenseAttribute: ExpenseAttribute;
+  category: string;
+  expenseAttribute: string;
   note: string;
   isBudgeted: boolean;
   budgetId: string;
+  accountId: string;
+  transactionType: string;
+  repaymentTargetAccountId: string;
+  installmentCount: string;
+  feeTotal: string;
+  editScope: string;
 }
 
-interface ImpactResult {
-  baseline: { minBalance: number; minDate: string; endBalance: number };
-  withExpense: { minBalance: number; minDate: string; endBalance: number };
-  delta: { minBalance: number; endBalance: number };
-}
-
-const EMPTY_FORM: TransactionFormData = {
-  date: nowLocalISODate(),
-  transactionType: 'normal',
-  accountId: '',
-  repaymentTargetAccountId: '',
+export const EMPTY_FORM: TransactionFormData = {
+  date: new Date().toISOString().slice(0, 10),
   amount: '',
   isExpense: true,
-  installmentCount: '3',
-  editScope: 'single',
-  feeTotal: '0',
-  category: '餐饮',
-  expenseAttribute: 'flexible_monthly',
+  category: '其他',
+  expenseAttribute: '',
   note: '',
   isBudgeted: false,
   budgetId: '',
+  accountId: '',
+  transactionType: 'normal',
+  repaymentTargetAccountId: '',
+  installmentCount: '3',
+  feeTotal: '',
+  editScope: 'plan',
 };
 
-const EXPENSE_ATTRIBUTE_OPTIONS: ExpenseAttribute[] = [
-  'rigid_fixed',
-  'flexible_monthly',
-  'annual_cycle',
-  'one_time_emergency',
+const CATEGORIES: string[] = [
+  '餐饮', '交通', '购物', '住房', '娱乐', '医疗', '教育', '通讯', '服饰', '日用品', '旅行',
+  '投资', '工资', '奖金', '兼职', '理财收益', '退款', '其他',
 ];
 
-export default function TransactionsPage() {
+const EXPENSE_ATTRIBUTE_OPTIONS: string[] = ['need', 'want', 'investment', 'debt_repayment'];
+const EXPENSE_ATTRIBUTE_LABELS: Record<string, string> = {
+  need: '刚需',
+  want: '改善',
+  investment: '投资',
+  debt_repayment: '还款',
+};
+
+const TRANSACTION_TYPE_LABELS: Record<string, string> = {
+  normal: '普通',
+  transfer: '转账',
+  repayment_out: '还款（扣款）',
+  repayment_in: '还款（到账）',
+  installment_bill: '分期',
+};
+
+const PAGE_SIZE = 20;
+
+// ============================================================
+// TransactionsPage
+// ============================================================
+
+const TransactionsPage: React.FC = () => {
+
+  // Data
   const [transactions, setTransactions] = useState<ITransaction[]>([]);
   const [accounts, setAccounts] = useState<IAccount[]>([]);
-  const [budgets, setBudgets] = useState<IBudget[]>([]);
+  const [budgets, setBudgets] = useState<any[]>([]);
 
-  // Filters
-  const [filterAccountId, setFilterAccountId] = useState('all');
-  const [filterCategory, setFilterCategory] = useState('all');
-  const [filterDateFrom, setFilterDateFrom] = useState('');
-  const [filterDateTo, setFilterDateTo] = useState('');
-  const [searchKeyword, setSearchKeyword] = useState('');
-  const [showFilters, setShowFilters] = useState(false);
-
-  // Dialog state
-  const [dialogOpen, setDialogOpen] = useState(false);
+  // Form state
+  const [formOpen, setFormOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editingMeta, setEditingMeta] = useState<{ transactionType?: TransactionType; installmentPlanId?: string } | null>(null);
   const [form, setForm] = useState<TransactionFormData>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
+
+  // Delete
+  const [deleteTarget, setDeleteTarget] = useState<ITransaction | null>(null);
+  const [deleteScope, setDeleteScope] = useState<'single' | 'plan'>('plan');
+
+  // Filters & sort
+  const [searchKeyword, setSearchKeyword] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
+  const [sortAsc, setSortAsc] = useState(false);
+  const [filterAccountId, setFilterAccountId] = useState('__all__');
+  const [filterCategory, setFilterCategory] = useState('__all__');
+  const [filterDateFrom, setFilterDateFrom] = useState('');
+  const [filterDateTo, setFilterDateTo] = useState('');
+  const [page, setPage] = useState(1);
+
+  // Impact assessment
+  const [impactResult, setImpactResult] = useState<any>(null);
+  const [impactLoading, setImpactLoading] = useState(false);
   const [impactStartBalance, setImpactStartBalance] = useState('0');
   const [impactSafetyLine, setImpactSafetyLine] = useState('0');
   const [impactIncludePlannedExpenses, setImpactIncludePlannedExpenses] = useState(true);
-  const [impactIncludeBudgetSettlement, setImpactIncludeBudgetSettlement] = useState(true);
-  const [impactLoading, setImpactLoading] = useState(false);
-  const [impactResult, setImpactResult] = useState<ImpactResult | null>(null);
+  const [impactIncludeBudgetSettlement, setImpactIncludeBudgetSettlement] = useState(false);
 
-  // Delete confirm
-  const [deleteTarget, setDeleteTarget] = useState<ITransaction | null>(null);
-
-  // Import
-  const [importing, setImporting] = useState(false);
-
-  // Sort
-  const [sortAsc, setSortAsc] = useState(false);
-
-  const refreshAll = useCallback(async () => {
-    try {
-      const [txns, accts, bdgs] = await Promise.all([
-        loadTransactions(),
-        loadAccounts(),
-        loadBudgets(),
-      ]);
-      setTransactions(txns);
-      setAccounts(accts);
-      setBudgets(bdgs);
-    } catch (error) {
-      toast.error(`加载数据失败：${String(error)}`);
-    }
+  // Load data
+  const fetchData = useCallback(async () => {
+    const [txns, accts, buds] = await Promise.all([
+      loadTransactions(),
+      loadAccounts(),
+      loadBudgets(),
+    ]);
+    setTransactions(txns);
+    setAccounts(accts);
+    setBudgets(buds);
   }, []);
 
-  const refreshTransactions = useCallback(async () => {
-    try {
-      const txns = await loadTransactions();
-      setTransactions(txns);
-    } catch (error) {
-      toast.error(`加载交易记录失败：${String(error)}`);
-    }
-  }, []);
+  useEffect(() => { fetchData(); }, [fetchData]);
 
-  useEffect(() => {
-    void refreshAll();
-  }, [refreshAll]);
+  // Helpers
+  const getAccountName = useCallback(
+    (id: string) => accounts.find((a) => a.id === id)?.name || '未知',
+    [accounts],
+  );
+  const getAccountType = useCallback(
+    (id: string) => accounts.find((a) => a.id === id)?.type || '',
+    [accounts],
+  );
+  const getBudgetName = useCallback(
+    (id: string) => budgets.find((b: any) => b.id === id)?.name || '未知',
+    [budgets],
+  );
+  const getTransactionTypeLabel = useCallback(
+    (type?: string) => TRANSACTION_TYPE_LABELS[type || 'normal'] || '普通',
+    [],
+  );
+  const isCashFlowShifted = useCallback(
+    (txn: ITransaction) => !!txn.cashOutDate && txn.cashOutDate !== txn.date,
+    [],
+  );
 
-  // Filtered & sorted
+  const currentPlanStarted = useMemo(() => {
+    if (!editingId) return false;
+    const txn = transactions.find((t) => t.id === editingId);
+    if (!txn?.installmentPlanId) return false;
+    const firstDate = transactions
+      .filter((t) => t.installmentPlanId === txn.installmentPlanId)
+      .map((t) => t.date)
+      .sort()[0];
+    return firstDate && firstDate <= new Date().toISOString().slice(0, 10);
+  }, [editingId, transactions]);
+
+  const editingMeta = useMemo(() => {
+    if (!editingId) return null;
+    return transactions.find((t) => t.id === editingId) || null;
+  }, [editingId, transactions]);
+
+  // Filtering & sorting
   const filtered = useMemo(() => {
     let result = [...transactions];
 
-    if (filterAccountId !== 'all') {
+    if (searchKeyword.trim()) {
+      const kw = searchKeyword.trim().toLowerCase();
+      result = result.filter(
+        (t) =>
+          (t.note || '').toLowerCase().includes(kw) ||
+          (t.category || '').toLowerCase().includes(kw),
+      );
+    }
+
+    if (filterAccountId !== '__all__') {
       result = result.filter((t) => t.accountId === filterAccountId);
     }
-    if (filterCategory !== 'all') {
+    if (filterCategory !== '__all__') {
       result = result.filter((t) => t.category === filterCategory);
     }
     if (filterDateFrom) {
@@ -185,1120 +205,434 @@ export default function TransactionsPage() {
     if (filterDateTo) {
       result = result.filter((t) => t.date <= filterDateTo);
     }
-    if (searchKeyword.trim()) {
-      const kw = searchKeyword.trim().toLowerCase();
-      result = result.filter(
-        (t) =>
-          t.note.toLowerCase().includes(kw) ||
-          t.category.toLowerCase().includes(kw)
-      );
-    }
 
     result.sort((a, b) => {
-      const cmp = new Date(b.date).getTime() - new Date(a.date).getTime();
-      return sortAsc ? -cmp : cmp;
+      const cmp = a.date.localeCompare(b.date) || a.amount - b.amount;
+      return sortAsc ? cmp : -cmp;
     });
 
     return result;
-  }, [transactions, filterAccountId, filterCategory, filterDateFrom, filterDateTo, searchKeyword, sortAsc]);
+  }, [transactions, searchKeyword, filterAccountId, filterCategory, filterDateFrom, filterDateTo, sortAsc]);
 
-  // Helpers
-  const getAccountName = (id: string) => {
-    const acc = accounts.find((a) => a.id === id);
-    return acc ? acc.name : '未知账户';
-  };
-  const getAccountType = (id: string) => {
-    const acc = accounts.find((a) => a.id === id);
-    return acc ? ACCOUNT_TYPE_LABELS[acc.type as keyof typeof ACCOUNT_TYPE_LABELS] || acc.type : '';
-  };
-  const getBudgetName = (id: string) => {
-    const b = budgets.find((b) => b.id === id);
-    return b ? b.name : '';
-  };
-  const getTransactionTypeLabel = (type?: TransactionType) => TRANSACTION_TYPE_LABELS[type || 'normal'];
-  const isCashFlowShifted = (transaction: ITransaction) =>
-    !!transaction.cashOutDate && transaction.cashOutDate !== transaction.date;
-  const selectedAccount = accounts.find((account) => account.id === form.accountId);
-  const repaymentTargets = accounts.filter((account) => account.type === 'credit_card' || account.type === 'alipay_huabei');
-  const debitAccounts = accounts.filter((account) => account.type === 'debit_card');
-  const canUseInstallment = selectedAccount?.type === 'credit_card' || selectedAccount?.type === 'alipay_huabei';
+  const hasActiveFilters = useMemo(
+    () =>
+      filterAccountId !== '__all__' ||
+      filterCategory !== '__all__' ||
+      !!filterDateFrom ||
+      !!filterDateTo,
+    [filterAccountId, filterCategory, filterDateFrom, filterDateTo],
+  );
 
-  // Form handlers
-  const openAddDialog = () => {
-    setEditingId(null);
-    setEditingMeta(null);
-    setForm({ ...EMPTY_FORM, date: nowLocalISODate() });
-    setImpactResult(null);
-    setDialogOpen(true);
-  };
+  const clearFilters = useCallback(() => {
+    setFilterAccountId('__all__');
+    setFilterCategory('__all__');
+    setFilterDateFrom('');
+    setFilterDateTo('');
+    setPage(1);
+  }, []);
 
-  const openEditDialog = (txn: ITransaction) => {
-    if (txn.transactionType === 'repayment_out' || txn.transactionType === 'repayment_in') {
-      toast.info('还款联动记录暂不支持编辑，请删除后重建');
-      return;
-    }
-    setEditingId(txn.id);
-    setEditingMeta({ transactionType: txn.transactionType || 'normal', installmentPlanId: txn.installmentPlanId });
-    setForm({
-      date: txn.date,
-      transactionType: txn.transactionType === 'installment_bill' ? 'installment_bill' : 'normal',
-      accountId: txn.accountId,
-      repaymentTargetAccountId: txn.transferAccountId || '',
-      amount: String(Math.abs(txn.amount)),
-      isExpense: txn.amount < 0,
-      installmentCount: txn.installmentTotal ? String(txn.installmentTotal) : '3',
-      editScope: txn.transactionType === 'installment_bill' ? 'plan' : 'single',
-      feeTotal: '0',
-      category: txn.category,
-      expenseAttribute: txn.expenseAttribute || 'flexible_monthly',
-      note: txn.note.replace(/（第\s*\d+\/\d+\s*期）$/, ''),
-      isBudgeted: txn.isBudgeted,
-      budgetId: txn.budgetId || '',
-    });
-    setImpactResult(null);
-    setDialogOpen(true);
-  };
-
-  function addMonths(dateISO: string, months: number): string {
-    const date = new Date(`${dateISO}T00:00:00`);
-    const originalDay = date.getDate();
-    date.setDate(1);
-    date.setMonth(date.getMonth() + months);
-    const lastDay = new Date(date.getFullYear(), date.getMonth() + 1, 0).getDate();
-    date.setDate(Math.min(originalDay, lastDay));
-    return formatLocalISODate(date);
-  }
-
-  const runImpact = async () => {
-    const todayISO = nowLocalISODate();
-    if (form.transactionType !== 'normal') {
-      toast.error('当前仅支持对“普通支出”做影响评估');
-      return;
-    }
-    if (!form.isExpense) {
-      toast.error('当前仅支持对“支出”做影响评估');
-      return;
-    }
-    if (!form.date || form.date < todayISO) {
-      toast.error('影响评估用于未来消费，请将日期设置为今天或之后');
-      return;
-    }
-    if (!form.accountId) {
-      toast.error('请选择账户（用于推导现金流日）');
-      return;
-    }
-    if (!form.amount || Number(form.amount) <= 0) {
-      toast.error('请输入有效金额');
-      return;
-    }
-
-    const rangeFrom = todayISO;
-    const baseTo = addMonths(todayISO, 6);
-    const rangeTo = form.date > baseTo ? addMonths(form.date, 6) : baseTo;
-
-    setImpactLoading(true);
-    try {
-      const res = await forecastApi.impact({
-        rangeFrom,
-        rangeTo,
-        startBalance: Number(impactStartBalance || 0),
-        includePlannedExpenses: impactIncludePlannedExpenses,
-        includeBudgetSettlement: impactIncludeBudgetSettlement,
-        simulatedExpense: {
-          date: form.date,
-          amount: Number(form.amount),
-          accountId: form.accountId,
-        },
-      });
-      if (!res.success) {
-        toast.error('影响评估失败');
-        return;
-      }
-      setImpactResult(res.data);
-    } catch (error) {
-      toast.error(`影响评估失败：${String(error)}`);
-    } finally {
-      setImpactLoading(false);
-    }
-  };
-
-  const handleSubmit = async (e: FormEvent) => {
-    e.preventDefault();
-    if (!form.accountId || !form.amount || Number(form.amount) <= 0) {
-      toast.error('请填写完整的交易信息');
-      return;
-    }
-    if (form.transactionType === 'repayment_out') {
-      if (!form.repaymentTargetAccountId) {
-        toast.error('请选择还款目标账户');
-        return;
-      }
-      if (form.repaymentTargetAccountId === form.accountId) {
-        toast.error('扣款账户和还款目标账户不能相同');
-        return;
-      }
-    }
-    if (form.transactionType === 'installment_bill' && (!form.installmentCount || Number(form.installmentCount) < 2)) {
-      toast.error('分期至少需要 2 期');
-      return;
-    }
-    if (form.isBudgeted && !form.budgetId) {
-      toast.error('请选择关联的预算项目');
-      return;
-    }
-
-    setSubmitting(true);
-    const amount = Number(form.amount) * (form.isExpense ? -1 : 1);
-
-    try {
-      if (editingId) {
-        const updated = await updateTransaction(editingId, {
-          date: form.date,
-          accountId: form.accountId,
-          amount,
-          category: form.category,
-          expenseAttribute: shouldShowExpenseAttribute ? form.expenseAttribute : undefined,
-          note: form.note,
-          isBudgeted: form.isBudgeted,
-          budgetId: form.isBudgeted ? form.budgetId : undefined,
-          editScope: editingMeta?.transactionType === 'installment_bill' ? form.editScope : undefined,
-        });
-        if (!updated) {
-          toast.error('交易记录更新失败');
-        } else {
-          toast.success('交易记录已更新');
-        }
-      } else {
-        const created = await createTransaction({
-          date: form.date,
-          accountId: form.accountId,
-          amount,
-          category: form.category,
-          expenseAttribute: shouldShowExpenseAttribute ? form.expenseAttribute : undefined,
-          note: form.note,
-          isBudgeted: form.isBudgeted,
-          budgetId: form.isBudgeted ? form.budgetId : undefined,
-          transactionType: form.transactionType,
-          transferAccountId: form.transactionType === 'repayment_out' ? form.repaymentTargetAccountId : undefined,
-          repaymentTargetAccountId: form.transactionType === 'repayment_out' ? form.repaymentTargetAccountId : undefined,
-          installmentCount: form.transactionType === 'installment_bill' ? Number(form.installmentCount) : undefined,
-          feeTotal: form.transactionType === 'installment_bill' ? Number(form.feeTotal || '0') : undefined,
-        });
-        if (!created) {
-          toast.error('交易记录创建失败');
-        } else {
-          toast.success(
-            form.transactionType === 'installment_bill'
-              ? '分期账单已生成'
-              : form.transactionType === 'repayment_out'
-                ? '还款记录已添加'
-                : '交易记录已添加',
-          );
-        }
-      }
-
-      await refreshTransactions();
-      setDialogOpen(false);
-      setForm(EMPTY_FORM);
-      setEditingId(null);
-    } finally {
-      setSubmitting(false);
-    }
-
-  };
-
-  const handleDelete = async (scope: 'single' | 'plan' = 'single') => {
-    if (!deleteTarget) return;
-    try {
-      const ok = await deleteTransaction(deleteTarget.id, scope);
-      if (ok) {
-        toast.success('交易记录已删除');
-        await refreshTransactions();
-      } else {
-        toast.error(scope === 'plan' ? '删除整组分期失败（可能已到达第一期日期）' : '删除失败');
-      }
-    } catch (error) {
-      toast.error(`删除失败：${String(error)}`);
-    }
-    setDeleteTarget(null);
-  };
-
-  const currentPlanStarted = useMemo(() => {
-    if (!editingMeta?.installmentPlanId) return false;
-    const today = nowLocalISODate();
-    return transactions.some((t) => t.installmentPlanId === editingMeta.installmentPlanId && t.date <= today);
-  }, [editingMeta?.installmentPlanId, transactions]);
-
-  const shouldShowExpenseAttribute =
-    form.transactionType === 'installment_bill' || (form.transactionType === 'normal' && form.isExpense);
-
-  const deleteInstallmentPlan = async () => {
-    if (!editingId) return;
-    if (!editingMeta?.installmentPlanId) return;
-    if (currentPlanStarted) {
-      toast.error('已到达/超过第一期日期，禁止整组删除分期计划');
-      return;
-    }
-    const ok = await deleteTransaction(editingId, 'plan');
-    if (ok) {
-      toast.success('分期计划已删除');
-      await refreshTransactions();
-      setDialogOpen(false);
-      setEditingId(null);
-      setEditingMeta(null);
-      setForm(EMPTY_FORM);
-      return;
-    }
-    toast.error('删除整组分期失败');
-  };
-
-  const handleExport = async () => {
-    const electronAPI = getElectronAPI();
-    if (electronAPI) {
-      const result = await electronAPI.exportDatabase();
-      if (result.success) {
-        toast.success('数据库已导出');
-      } else {
-        toast.error(result.error || '导出失败');
-      }
-      return;
-    }
-
-    exportAllData();
-    toast.success('数据已导出');
-  };
-
-  const handleImportDatabase = async () => {
-    const electronAPI = getElectronAPI();
-    if (!electronAPI) return;
-    setImporting(true);
-    try {
-      const result = await electronAPI.importDatabase();
-      if (result.success) {
-        toast.success('数据库已导入');
-        await refreshAll();
-      } else {
-        toast.error(result.error || '导入失败');
-      }
-    } finally {
-      setImporting(false);
-    }
-  };
-
-  const handleImportJson = (e: ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    setImporting(true);
-    const reader = new FileReader();
-    reader.onload = (ev) => {
-      const text = ev.target?.result;
-      if (typeof text === 'string') {
-        const ok = importAllData(text);
-        if (ok) {
-          toast.success('数据导入成功');
-          void refreshAll();
-        } else {
-          toast.error('文件格式不正确，导入失败');
-        }
-      }
-      setImporting(false);
-      e.target.value = '';
-    };
-    reader.onerror = () => {
-      toast.error('文件读取失败');
-      setImporting(false);
-      e.target.value = '';
-    };
-    reader.readAsText(file);
-  };
+  const paged = useMemo(() => {
+    const start = (page - 1) * PAGE_SIZE;
+    return filtered.slice(start, start + PAGE_SIZE);
+  }, [filtered, page]);
 
   // Totals
   const totalIncome = useMemo(
-    () => filtered.filter((t) => t.amount > 0 && t.transactionType !== 'repayment_in').reduce((s, t) => s + t.amount, 0),
-    [filtered]
+    () => filtered.filter((t) => t.amount > 0).reduce((sum, t) => sum + t.amount, 0),
+    [filtered],
   );
   const totalExpense = useMemo(
-    () => filtered.filter((t) => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0),
-    [filtered]
+    () => filtered.filter((t) => t.amount < 0).reduce((sum, t) => sum + Math.abs(t.amount), 0),
+    [filtered],
   );
 
-  const hasActiveFilters =
-    filterAccountId !== 'all' ||
-    filterCategory !== 'all' ||
-    filterDateFrom !== '' ||
-    filterDateTo !== '' ||
-    searchKeyword.trim() !== '';
+  // Form handlers
+  const openAddDialog = useCallback(() => {
+    setEditingId(null);
+    setForm(EMPTY_FORM);
+    setImpactResult(null);
+    setFormOpen(true);
+  }, []);
 
-  const clearFilters = () => {
-    setFilterAccountId('all');
-    setFilterCategory('all');
-    setFilterDateFrom('');
-    setFilterDateTo('');
-    setSearchKeyword('');
-  };
+  const openEditDialog = useCallback(
+    (txn: ITransaction) => {
+      setEditingId(txn.id);
+      setForm({
+        date: txn.date || '',
+        amount: String(Math.abs(txn.amount)),
+        isExpense: txn.amount < 0,
+        category: txn.category || '其他',
+        expenseAttribute: txn.expenseAttribute || '',
+        note: txn.note || '',
+        isBudgeted: Boolean(txn.isBudgeted),
+        budgetId: txn.budgetId || '',
+        accountId: txn.accountId || '',
+        transactionType: txn.transactionType || 'normal',
+        repaymentTargetAccountId: txn.repaymentTargetAccountId || '',
+        installmentCount: txn.installmentTotal ? String(txn.installmentTotal) : '3',
+        feeTotal: '',
+        editScope: 'plan',
+      });
+      setImpactResult(null);
+      setFormOpen(true);
+    },
+    [],
+  );
+
+  const handleCancel = useCallback(() => {
+    setFormOpen(false);
+    setEditingId(null);
+    setForm(EMPTY_FORM);
+    setImpactResult(null);
+  }, []);
+
+  const handleSubmit = useCallback(
+    async (e: React.FormEvent) => {
+      e.preventDefault();
+      if (!form.accountId || !form.amount || !form.date) return;
+
+      if (form.transactionType === 'repayment_out' && !form.repaymentTargetAccountId) {
+        toast.error('请选择还款目标账户');
+        return;
+      }
+
+      setSubmitting(true);
+      try {
+        const amount = Number(form.amount);
+        const payload: any = {
+          date: form.date,
+          amount,
+          category: form.category as TransactionCategory,
+          note: form.note,
+          isBudgeted: form.isBudgeted,
+          budgetId: form.isBudgeted ? form.budgetId || undefined : undefined,
+          accountId: form.accountId,
+          transactionType: form.transactionType,
+          expenseAttribute: (form.expenseAttribute || undefined) as ExpenseAttribute | undefined,
+        };
+
+        if (form.transactionType === 'repayment_out') {
+          payload.repaymentTargetAccountId = form.repaymentTargetAccountId;
+        }
+        if (form.transactionType === 'installment_bill' && !editingId) {
+          payload.installmentCount = Number(form.installmentCount) || 3;
+          payload.feeTotal = Number(form.feeTotal) || 0;
+        }
+
+        if (form.transactionType === 'normal') {
+          payload.isExpense = form.isExpense;
+        }
+
+        if (editingId) {
+          if (editingMeta?.transactionType === 'installment_bill') {
+            await updateTransaction(editingId, payload, form.editScope as 'single' | 'plan');
+          } else {
+            await updateTransaction(editingId, payload, 'single');
+          }
+        } else {
+          await createTransaction(payload);
+        }
+
+        await fetchData();
+        handleCancel();
+      } catch (err) {
+        toast.error('操作失败', { description: String(err) });
+      } finally {
+        setSubmitting(false);
+      }
+    },
+    [form, editingId, editingMeta, fetchData, handleCancel, toast],
+  );
+
+  // Delete
+  const handleDelete = useCallback(
+    async (txn: ITransaction) => {
+      if (txn.transactionType === 'repayment_in') return;
+      setDeleteTarget(txn);
+      setDeleteScope(txn.installmentPlanId ? 'plan' : 'single');
+    },
+    [],
+  );
+
+  const confirmDelete = useCallback(async () => {
+    if (!deleteTarget) return;
+    try {
+      const success = await deleteTransaction(deleteTarget.id, deleteScope);
+      if (success) {
+        await fetchData();
+      } else {
+        toast.error('删除失败', { description: '分期已开始执行，无法删除' });
+      }
+    } catch (err) {
+      toast.error('删除失败', { description: String(err) });
+    } finally {
+      setDeleteTarget(null);
+    }
+  }, [deleteTarget, deleteScope, fetchData, toast]);
+
+  // Impact
+  const handleRunImpact = useCallback(async () => {
+    if (!form.amount) return;
+    setImpactLoading(true);
+    try {
+      const result = await forecastApi.impact({
+        rangeFrom: new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10),
+        rangeTo: new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10),
+        startBalance: Number(impactStartBalance) || 0,
+        includePlannedExpenses: impactIncludePlannedExpenses,
+        includeBudgetSettlement: impactIncludeBudgetSettlement,
+        simulatedExpense: {
+          amount: Number(form.amount),
+          date: form.date,
+          accountId: form.accountId || undefined,
+        },
+      });
+      setImpactResult(result.data);
+    } catch {
+      toast.error('评估失败');
+    } finally {
+      setImpactLoading(false);
+    }
+  }, [form, impactStartBalance, impactSafetyLine, impactIncludePlannedExpenses, impactIncludeBudgetSettlement, toast]);
+
+  // Delete installment plan
+  const handleDeleteInstallmentPlan = useCallback(async () => {
+    if (!editingId || !editingMeta?.installmentPlanId) return;
+    try {
+      const success = await deleteTransaction(editingId, 'plan');
+      if (success) {
+        await fetchData();
+        handleCancel();
+      } else {
+        toast.error('无法删除', { description: '该分期已开始执行' });
+      }
+    } catch (err) {
+      toast.error('删除失败', { description: String(err) });
+    }
+  }, [editingId, editingMeta, fetchData, handleCancel, toast]);
+
+  // Import / Export
+  const handleExport = useCallback(() => {
+    const csv = [
+      '日期,账户,分类,类型,金额,备注,预算,支出属性',
+      ...filtered.map((t) =>
+        [
+          t.date,
+          getAccountName(t.accountId),
+          t.category,
+          getTransactionTypeLabel(t.transactionType),
+          t.amount,
+          `"${(t.note || '').replace(/"/g, '""')}"`,
+          t.isBudgeted && t.budgetId ? getBudgetName(t.budgetId) : '',
+          t.expenseAttribute || '',
+        ].join(','),
+      ),
+    ].join('\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `transactions_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [filtered, getAccountName, getTransactionTypeLabel, getBudgetName]);
+
+  const handleImport = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async (ev) => {
+        try {
+          const text = ev.target?.result as string;
+          const lines = text.split('\n').filter(Boolean);
+          if (lines.length < 2) {
+            toast.error('文件为空或格式不正确');
+            return;
+          }
+          let imported = 0;
+          for (let i = 1; i < lines.length; i++) {
+            const cols = lines[i].split(',');
+            if (cols.length < 6) continue;
+            await createTransaction({
+              date: cols[0]?.trim(),
+              accountId: accounts.find((a) => a.name === cols[1]?.trim())?.id || '',
+              category: (cols[2]?.trim() || '其他') as TransactionCategory,
+              amount: Number(cols[4] || 0),
+              note: (cols[5] || '').replace(/^"|"$/g, '').trim(),
+            });
+            imported++;
+          }
+          await fetchData();
+          toast.success(`成功导入 ${imported} 条记录`);
+        } catch (err) {
+          toast.error('导入失败', { description: String(err) });
+        }
+      };
+      reader.readAsText(file);
+    },
+    [accounts, fetchData, toast],
+  );
+
+  // Debit accounts for repayment
+  const debitAccounts = useMemo(
+    () => accounts.filter((a) => a.type !== 'credit_card' && a.type !== 'huabei'),
+    [accounts],
+  );
+  const repaymentTargets = useMemo(
+    () => accounts.filter((a) => a.type === 'credit_card' || a.type === 'huabei'),
+    [accounts],
+  );
+
+  // Expense attribute visibility
+  const shouldShowExpenseAttribute = form.transactionType !== 'repayment_out' && form.isExpense;
 
   return (
-    <div className="min-h-screen bg-background">
-      <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-foreground">总账目表</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              管理所有账户的收支记录
+    <div className="space-y-4">
+      {/* Header */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <h1 className="text-xl font-semibold">交易记录</h1>
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="file"
+            accept=".csv"
+            onChange={handleImport}
+            className="hidden"
+            id="import-csv"
+          />
+          <Button variant="outline" size="sm" onClick={() => document.getElementById('import-csv')?.click()} className="gap-1.5">
+            <FileUp className="size-3.5" />
+            导入
+          </Button>
+          <Button variant="outline" size="sm" onClick={handleExport} className="gap-1.5">
+            <FileDown className="size-3.5" />
+            导出
+          </Button>
+          <Button size="sm" onClick={openAddDialog} className="gap-1.5">
+            <Plus className="size-3.5" />
+            添加记录
+          </Button>
+        </div>
+      </div>
+
+      {/* Summary Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">交易总数</p>
+            <p className="text-lg font-semibold tabular-nums">{filtered.length}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">收入合计</p>
+            <p className="text-lg font-semibold tabular-nums text-success">¥{totalIncome.toLocaleString()}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">支出合计</p>
+            <p className="text-lg font-semibold tabular-nums text-destructive">¥{totalExpense.toLocaleString()}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="p-4">
+            <p className="text-xs text-muted-foreground">结余</p>
+            <p className={`text-lg font-semibold tabular-nums ${totalIncome - totalExpense >= 0 ? 'text-success' : 'text-destructive'}`}>
+              ¥{(totalIncome - totalExpense).toLocaleString()}
             </p>
-          </div>
-          <div className="flex items-center gap-2 flex-wrap">
-            <Button onClick={openAddDialog} size="sm">
-              <Plus className="size-4" />
-              添加记录
-            </Button>
-            <Button variant="outline" size="sm" onClick={handleExport}>
-              <Download className="size-4" />
-              导出
-            </Button>
-            {IS_ELECTRON ? (
-              <Button variant="outline" size="sm" onClick={handleImportDatabase} disabled={importing}>
-                <Upload className="size-4" />
-                {importing ? '导入中...' : '导入'}
-              </Button>
-            ) : (
-              <Button variant="outline" size="sm" asChild>
-                <label className="cursor-pointer">
-                  <Upload className="size-4" />
-                  {importing ? '导入中...' : '导入'}
-                  <input
-                    type="file"
-                    accept=".json"
-                    onChange={handleImportJson}
-                    className="hidden"
-                    disabled={importing}
-                  />
-                </label>
-              </Button>
-            )}
-          </div>
-        </div>
-
-        {/* Summary Cards */}
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-xs font-medium text-muted-foreground">
-                记录数
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold tabular-nums">{filtered.length}</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-xs font-medium text-muted-foreground">
-                收入合计
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold tabular-nums text-success">
-                ¥{totalIncome.toLocaleString()}
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-xs font-medium text-muted-foreground">
-                支出合计
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p className="text-2xl font-bold tabular-nums text-destructive">
-                ¥{totalExpense.toLocaleString()}
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardHeader className="pb-2">
-              <CardTitle className="text-xs font-medium text-muted-foreground">
-                结余
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <p
-                className={`text-2xl font-bold tabular-nums ${
-                  totalIncome - totalExpense >= 0 ? 'text-foreground' : 'text-destructive'
-                }`}
-              >
-                ¥{(totalIncome - totalExpense).toLocaleString()}
-              </p>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Filters */}
-        <Card>
-          <CardContent className="pt-4">
-            <div className="flex flex-col gap-3">
-              {/* Search bar */}
-              <div className="flex items-center gap-2">
-                <div className="relative flex-1">
-                  <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
-                  <Input
-                    type="search"
-                    value={searchKeyword}
-                    onChange={(e) => setSearchKeyword(e.target.value)}
-                    placeholder="搜索备注或分类..."
-                    className="bg-background pl-9"
-                  />
-                </div>
-                <Button
-                  variant={showFilters ? 'secondary' : 'outline'}
-                  size="icon"
-                  onClick={() => setShowFilters(!showFilters)}
-                  aria-label="筛选"
-                >
-                  <Filter className="size-4" />
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={() => setSortAsc(!sortAsc)}
-                  aria-label="排序"
-                >
-                  <ArrowUpDown className="size-4" />
-                </Button>
-              </div>
-
-              {/* Expandable filters */}
-              {showFilters && (
-                <div className="flex flex-wrap items-end gap-3 pt-2 border-t">
-                  <div className="flex flex-col gap-1.5 min-w-[140px]">
-                    <Label className="text-xs text-muted-foreground">账户</Label>
-                    <Select value={filterAccountId} onValueChange={setFilterAccountId}>
-                      <SelectTrigger className="h-9">
-                        <SelectValue placeholder="全部账户" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">全部账户</SelectItem>
-                        {accounts.map((a: { id: string; name: string }) => (
-                          <SelectItem key={a.id} value={a.id}>
-                            {a.name}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex flex-col gap-1.5 min-w-[120px]">
-                    <Label className="text-xs text-muted-foreground">分类</Label>
-                    <Select value={filterCategory} onValueChange={setFilterCategory}>
-                      <SelectTrigger className="h-9">
-                        <SelectValue placeholder="全部分类" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="all">全部分类</SelectItem>
-                        {CATEGORIES.map((c) => (
-                          <SelectItem key={c} value={c}>
-                            {c}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label className="text-xs text-muted-foreground">开始日期</Label>
-                    <Input
-                      type="date"
-                      value={filterDateFrom}
-                      onChange={(e) => setFilterDateFrom(e.target.value)}
-                      className="h-9 w-[150px]"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1.5">
-                    <Label className="text-xs text-muted-foreground">结束日期</Label>
-                    <Input
-                      type="date"
-                      value={filterDateTo}
-                      onChange={(e) => setFilterDateTo(e.target.value)}
-                      className="h-9 w-[150px]"
-                    />
-                  </div>
-                  {hasActiveFilters && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={clearFilters}
-                      className="h-9"
-                    >
-                      <X className="size-3" />
-                      清除筛选
-                    </Button>
-                  )}
-                </div>
-              )}
-            </div>
           </CardContent>
         </Card>
+      </div>
 
-        {/* Transactions Table */}
-        <Card>
-          <CardHeader className="pb-3">
-            <CardTitle className="text-base">
-              交易记录
-              {hasActiveFilters && (
-                <Badge variant="secondary" className="ml-2 align-middle">
-                  已筛选
-                </Badge>
-              )}
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-0">
-            {filtered.length === 0 ? (
-              <div className="py-16 text-center text-muted-foreground">
-                <p className="text-lg">暂无交易记录</p>
-                <p className="text-sm mt-1">
-                  {hasActiveFilters ? '尝试调整筛选条件' : '点击"添加记录"开始记账'}
-                </p>
-              </div>
-            ) : (
-              <div className="w-full overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="whitespace-nowrap">日期</TableHead>
-                      <TableHead className="whitespace-nowrap">账户</TableHead>
-                      <TableHead className="whitespace-nowrap">分类</TableHead>
-                      <TableHead className="whitespace-nowrap">类型</TableHead>
-                      <TableHead className="whitespace-nowrap text-right">金额</TableHead>
-                      <TableHead className="whitespace-nowrap">备注</TableHead>
-                      <TableHead className="whitespace-nowrap">预算</TableHead>
-                      <TableHead className="whitespace-nowrap text-right">操作</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {filtered.map((txn) => (
-                      <TableRow key={txn.id}>
-                        <TableCell className="whitespace-nowrap text-sm">
-                          <div>{txn.date}</div>
-                          {isCashFlowShifted(txn) && (
-                            <div className="text-xs text-muted-foreground">
-                              现金流日 {txn.cashOutDate}
-                            </div>
-                          )}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap">
-                          <div className="text-sm font-medium">{getAccountName(txn.accountId)}</div>
-                          <div className="text-xs text-muted-foreground">
-                            {getAccountType(txn.accountId)}
-                          </div>
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap">
-                          <Badge variant="outline" className="text-xs">
-                            {txn.category}
-                          </Badge>
-                          {txn.expenseAttribute && (
-                            <div className="mt-1">
-                              <Badge variant="secondary" className="text-[11px]">
-                                {EXPENSE_ATTRIBUTE_LABELS[txn.expenseAttribute]}
-                              </Badge>
-                            </div>
-                          )}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap">
-                          <Badge variant={txn.transactionType && txn.transactionType !== 'normal' ? 'secondary' : 'outline'} className="text-xs">
-                            {getTransactionTypeLabel(txn.transactionType)}
-                          </Badge>
-                        </TableCell>
-                        <TableCell
-                          className={`whitespace-nowrap text-right text-sm font-semibold tabular-nums ${
-                            txn.amount >= 0 ? 'text-success' : 'text-destructive'
-                          }`}
-                        >
-                          {txn.amount >= 0 ? '+' : ''}¥{Math.abs(txn.amount).toLocaleString()}
-                        </TableCell>
-                        <TableCell className="max-w-[160px]">
-                          <span className="block truncate text-sm">{txn.note || '-'}</span>
-                          {txn.transferAccountId && (
-                            <span className="block truncate text-xs text-muted-foreground">
-                              对方账户：{getAccountName(txn.transferAccountId)}
-                            </span>
-                          )}
-                          {txn.installmentPlanId && txn.installmentIndex && txn.installmentTotal && (
-                            <span className="block truncate text-xs text-muted-foreground">
-                              分期：第 {txn.installmentIndex}/{txn.installmentTotal} 期
-                            </span>
-                          )}
-                          {txn.installmentFee != null && txn.installmentFee > 0 && (
-                            <span className="block truncate text-xs text-muted-foreground">
-                              含手续费：¥{txn.installmentFee.toLocaleString()}
-                            </span>
-                          )}
-                          {isCashFlowShifted(txn) && (
-                            <span className="block truncate text-xs text-muted-foreground">
-                              记账日 {txn.date}，预计还款日 {txn.cashOutDate}
-                            </span>
-                          )}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap">
-                          {txn.isBudgeted && txn.budgetId ? (
-                            <Badge variant="secondary" className="text-xs">
-                              {getBudgetName(txn.budgetId)}
-                            </Badge>
-                          ) : (
-                            <span className="text-xs text-muted-foreground">-</span>
-                          )}
-                        </TableCell>
-                        <TableCell className="whitespace-nowrap text-right">
-                          <div className="flex items-center justify-end gap-1">
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8"
-                              onClick={() => openEditDialog(txn)}
-                              aria-label="编辑"
-                              disabled={txn.transactionType === 'repayment_out' || txn.transactionType === 'repayment_in'}
-                            >
-                              <Pencil className="size-3.5" />
-                            </Button>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-8 w-8 text-destructive hover:text-destructive"
-                              onClick={() => setDeleteTarget(txn)}
-                              aria-label="删除"
-                            >
-                              <Trash2 className="size-3.5" />
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      </main>
+      {/* Filters */}
+      <TransactionFilters
+        searchKeyword={searchKeyword}
+        onSearchChange={setSearchKeyword}
+        showFilters={showFilters}
+        onToggleFilters={() => setShowFilters(!showFilters)}
+        sortAsc={sortAsc}
+        onToggleSort={() => setSortAsc(!sortAsc)}
+        filterAccountId={filterAccountId}
+        onAccountFilterChange={setFilterAccountId}
+        filterCategory={filterCategory}
+        onCategoryFilterChange={setFilterCategory}
+        filterDateFrom={filterDateFrom}
+        onDateFromChange={setFilterDateFrom}
+        filterDateTo={filterDateTo}
+        onDateToChange={setFilterDateTo}
+        accounts={accounts.map((a) => ({ id: a.id, name: a.name }))}
+        CATEGORIES={CATEGORIES}
+        hasActiveFilters={hasActiveFilters}
+        onClearFilters={clearFilters}
+      />
 
-      {/* Add / Edit Dialog */}
-      <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>
-        <DialogContent className="sm:max-w-[480px] max-h-[85dvh] overflow-y-auto">
-          <form onSubmit={handleSubmit}>
-            <DialogHeader>
-              <DialogTitle>{editingId ? '编辑交易记录' : '添加交易记录'}</DialogTitle>
-              <DialogDescription>
-                {editingId ? '修改交易信息后保存' : '填写交易信息并保存'}
-              </DialogDescription>
-            </DialogHeader>
-            <div className="grid gap-4 py-4">
-              {/* Date */}
-              <div className="grid gap-1.5">
-                <Label htmlFor="txn-date">日期</Label>
-                <Input
-                  id="txn-date"
-                  type="date"
-                  value={form.date}
-                  onChange={(e) => {
-                    setForm({ ...form, date: e.target.value });
-                    setImpactResult(null);
-                  }}
-                  required
-                />
-              </div>
+      {/* Table */}
+      <TransactionTable
+        filtered={paged}
+        getAccountName={getAccountName}
+        getAccountType={getAccountType}
+        getBudgetName={getBudgetName}
+        getTransactionTypeLabel={getTransactionTypeLabel}
+        isCashFlowShifted={isCashFlowShifted}
+        EXPENSE_ATTRIBUTE_LABELS={EXPENSE_ATTRIBUTE_LABELS}
+        hasActiveFilters={hasActiveFilters}
+        onEdit={openEditDialog}
+        onDelete={handleDelete}
+        totalCount={filtered.length}
+        page={page}
+        pageSize={PAGE_SIZE}
+        onPageChange={setPage}
+      />
 
-              {/* Account */}
-              <div className="grid gap-1.5">
-                <Label>账户</Label>
-                <Select
-                  value={form.transactionType}
-                  onValueChange={(value) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      transactionType: value as TransactionFormData['transactionType'],
-                      accountId: '',
-                      repaymentTargetAccountId: '',
-                      isExpense: value === 'normal' ? prev.isExpense : true,
-                      installmentCount: value === 'installment_bill' ? prev.installmentCount || '3' : prev.installmentCount,
-                    }))
-                  }
-                  disabled={!!editingId}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="交易类型" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="normal">普通收支</SelectItem>
-                    <SelectItem value="repayment_out">信用卡/花呗还款</SelectItem>
-                    <SelectItem value="installment_bill">分期账单自动录入</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
+      {/* Form Dialog */}
+      <TransactionForm
+        open={formOpen}
+        onOpenChange={setFormOpen}
+        editingId={editingId}
+        editingMeta={editingMeta}
+        form={form}
+        onChange={setForm}
+        onSubmit={handleSubmit}
+        onCancel={handleCancel}
+        submitting={submitting}
+        accounts={accounts.map((a) => ({ id: a.id, name: a.name }))}
+        debitAccounts={debitAccounts.map((a) => ({ id: a.id, name: a.name }))}
+        repaymentTargets={repaymentTargets.map((a) => ({ id: a.id, name: a.name }))}
+        budgets={budgets.filter((b: any) => !b.isIncomeBudget).map((b: any) => ({ id: b.id, name: b.name }))}
+        shouldShowExpenseAttribute={shouldShowExpenseAttribute}
+        CATEGORIES={CATEGORIES}
+        EXPENSE_ATTRIBUTE_OPTIONS={EXPENSE_ATTRIBUTE_OPTIONS}
+        EXPENSE_ATTRIBUTE_LABELS={EXPENSE_ATTRIBUTE_LABELS}
+        impactResult={impactResult}
+        impactLoading={impactLoading}
+        impactStartBalance={impactStartBalance}
+        impactSafetyLine={impactSafetyLine}
+        impactIncludePlannedExpenses={impactIncludePlannedExpenses}
+        impactIncludeBudgetSettlement={impactIncludeBudgetSettlement}
+        onImpactStartBalanceChange={setImpactStartBalance}
+        onImpactSafetyLineChange={setImpactSafetyLine}
+        onImpactIncludePlannedExpensesChange={setImpactIncludePlannedExpenses}
+        onImpactIncludeBudgetSettlementChange={setImpactIncludeBudgetSettlement}
+        onRunImpact={handleRunImpact}
+        onDeleteInstallmentPlan={handleDeleteInstallmentPlan}
+        currentPlanStarted={currentPlanStarted}
+      />
 
-              {editingMeta?.transactionType === 'installment_bill' && (
-                <div className="grid gap-1.5">
-                  <Label>修改范围</Label>
-                  <Select
-                    value={form.editScope}
-                    onValueChange={(v) => setForm((prev) => ({ ...prev, editScope: v as TransactionFormData['editScope'] }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="plan">整组分期</SelectItem>
-                      <SelectItem value="single">仅本期</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-
-              <div className="grid gap-1.5">
-                <Label>{form.transactionType === 'repayment_out' ? '扣款账户（储蓄卡）' : '账户'}</Label>
-                <Select
-                  value={form.accountId}
-                  onValueChange={(v) => {
-                    setForm({ ...form, accountId: v });
-                    setImpactResult(null);
-                  }}
-                  disabled={editingMeta?.transactionType === 'installment_bill'}
-                >
-                  <SelectTrigger>
-                    <SelectValue placeholder="选择账户" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(form.transactionType === 'repayment_out' ? debitAccounts : accounts).map((a: { id: string; name: string }) => (
-                      <SelectItem key={a.id} value={a.id}>
-                        {a.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {form.transactionType === 'repayment_out' && (
-                <div className="grid gap-1.5">
-                  <Label>还款目标账户</Label>
-                  <Select
-                    value={form.repaymentTargetAccountId}
-                    onValueChange={(v) => setForm({ ...form, repaymentTargetAccountId: v })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="选择信用卡或花呗账户" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {repaymentTargets.map((account) => (
-                        <SelectItem key={account.id} value={account.id}>
-                          {account.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-
-              {/* Amount + type */}
-              <div className="grid gap-1.5">
-                <Label htmlFor="txn-amount">金额</Label>
-                <div className="flex items-center gap-2">
-                  {form.transactionType === 'normal' ? (
-                    <Button
-                      type="button"
-                      variant={form.isExpense ? 'destructive' : 'outline'}
-                      size="sm"
-                      className="shrink-0"
-                      onClick={() => {
-                        setForm({ ...form, isExpense: !form.isExpense });
-                        setImpactResult(null);
-                      }}
-                    >
-                      {form.isExpense ? '支出' : '收入'}
-                    </Button>
-                  ) : (
-                    <Badge variant="secondary" className="shrink-0 h-9 px-3 flex items-center">
-                      {form.transactionType === 'repayment_out' ? '还款金额' : '每期金额'}
-                    </Badge>
-                  )}
-                  <Input
-                    id="txn-amount"
-                    type="number"
-                    step="0.01"
-                    min="0.01"
-                    value={form.amount}
-                    onChange={(e) => {
-                      setForm({ ...form, amount: e.target.value });
-                      setImpactResult(null);
-                    }}
-                    placeholder="0.00"
-                    required
-                    className="flex-1"
-                  />
-                </div>
-              </div>
-
-              {form.transactionType === 'installment_bill' && (
-                <div className="grid gap-1.5">
-                  <Label htmlFor="txn-installments">分期期数</Label>
-                  <Input
-                    id="txn-installments"
-                    type="number"
-                    min="2"
-                    step="1"
-                    value={form.installmentCount}
-                    onChange={(e) => setForm({ ...form, installmentCount: e.target.value })}
-                    placeholder="如：3 / 6 / 12"
-                    disabled={!!editingId}
-                  />
-                </div>
-              )}
-
-              {form.transactionType === 'installment_bill' && !editingId && (
-                <div className="grid gap-1.5">
-                  <Label htmlFor="txn-fee-total">分期手续费（总额，可选）</Label>
-                  <Input
-                    id="txn-fee-total"
-                    type="number"
-                    min="0"
-                    step="0.01"
-                    value={form.feeTotal}
-                    onChange={(e) => setForm({ ...form, feeTotal: e.target.value })}
-                    placeholder="0.00"
-                  />
-                </div>
-              )}
-
-              {/* Category */}
-              <div className="grid gap-1.5">
-                <Label>分类</Label>
-                <Select
-                  value={form.category}
-                  onValueChange={(v) => setForm({ ...form, category: v as TransactionCategory })}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {CATEGORIES.map((c) => (
-                      <SelectItem key={c} value={c}>
-                        {c}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-
-              {shouldShowExpenseAttribute && (
-                <div className="grid gap-1.5">
-                  <Label>支出属性</Label>
-                  <Select
-                    value={form.expenseAttribute}
-                    onValueChange={(v) => setForm({ ...form, expenseAttribute: v as ExpenseAttribute })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {EXPENSE_ATTRIBUTE_OPTIONS.map((option) => (
-                        <SelectItem key={option} value={option}>
-                          {EXPENSE_ATTRIBUTE_LABELS[option]}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                  <p className="text-xs text-muted-foreground">
-                    统计页会优先使用这里的显式标记，而不是再按分类自动推断。
-                  </p>
-                </div>
-              )}
-
-              {/* Note */}
-              <div className="grid gap-1.5">
-                <Label htmlFor="txn-note">备注</Label>
-                <Textarea
-                  id="txn-note"
-                  value={form.note}
-                  onChange={(e) => setForm({ ...form, note: e.target.value })}
-                  placeholder="可选备注"
-                  rows={2}
-                />
-              </div>
-
-              {/* Budget toggle */}
-              {form.transactionType !== 'repayment_out' && (
-                <div className="flex items-center justify-between">
-                  <Label htmlFor="txn-budgeted" className="cursor-pointer">
-                    是否预算内
-                  </Label>
-                  <Switch
-                    id="txn-budgeted"
-                    checked={form.isBudgeted}
-                    onCheckedChange={(checked) =>
-                      setForm({ ...form, isBudgeted: checked, budgetId: checked ? form.budgetId : '' })
-                    }
-                  />
-                </div>
-              )}
-
-              {form.isBudgeted && (
-                <div className="grid gap-1.5">
-                  <Label>关联预算项目</Label>
-                  <Select
-                    value={form.budgetId}
-                    onValueChange={(v) => setForm({ ...form, budgetId: v })}
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="选择预算项目" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {budgets.map((b: { id: string; name: string }) => (
-                        <SelectItem key={b.id} value={b.id}>
-                          {b.name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
-                </div>
-              )}
-
-              {form.transactionType === 'normal' && form.isExpense && (
-                <div className="rounded-lg border p-3 space-y-3">
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">
-                      <p className="font-medium">大额消费影响评估</p>
-                      <p className="text-xs text-muted-foreground">在未来 6 个月范围内，对比“基线”与“新增本笔消费”后的最低余额</p>
-                    </div>
-                    <Button type="button" variant="outline" size="sm" onClick={() => void runImpact()} disabled={impactLoading}>
-                      {impactLoading ? '评估中...' : '查看影响'}
-                    </Button>
-                  </div>
-
-                  <div className="flex flex-wrap items-end gap-3">
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="impact-start-balance">起始余额</Label>
-                      <Input
-                        id="impact-start-balance"
-                        type="number"
-                        step="0.01"
-                        value={impactStartBalance}
-                        onChange={(e) => {
-                          setImpactStartBalance(e.target.value);
-                          setImpactResult(null);
-                        }}
-                        className="w-[140px]"
-                      />
-                    </div>
-                    <div className="grid gap-1.5">
-                      <Label htmlFor="impact-safety-line">安全线</Label>
-                      <Input
-                        id="impact-safety-line"
-                        type="number"
-                        step="0.01"
-                        value={impactSafetyLine}
-                        onChange={(e) => {
-                          setImpactSafetyLine(e.target.value);
-                          setImpactResult(null);
-                        }}
-                        className="w-[140px]"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2 pb-1">
-                      <Label htmlFor="impact-include-planned">考虑预估支出</Label>
-                      <Switch
-                        id="impact-include-planned"
-                        checked={impactIncludePlannedExpenses}
-                        onCheckedChange={(checked) => {
-                          setImpactIncludePlannedExpenses(checked);
-                          setImpactResult(null);
-                        }}
-                      />
-                    </div>
-                    <div className="flex items-center gap-2 pb-1">
-                      <Label htmlFor="impact-include-budget">考虑预算结算</Label>
-                      <Switch
-                        id="impact-include-budget"
-                        checked={impactIncludeBudgetSettlement}
-                        onCheckedChange={(checked) => {
-                          setImpactIncludeBudgetSettlement(checked);
-                          setImpactResult(null);
-                        }}
-                      />
-                    </div>
-                  </div>
-
-                  {impactResult && (
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                      <div className="rounded-lg border p-3">
-                        <p className="text-xs text-muted-foreground">基线最低余额</p>
-                        <p className="text-base font-semibold tabular-nums">¥{Math.round(impactResult.baseline.minBalance).toLocaleString()}</p>
-                        <p className="text-xs text-muted-foreground mt-1">{impactResult.baseline.minDate}</p>
-                      </div>
-                      <div className="rounded-lg border p-3">
-                        <p className="text-xs text-muted-foreground">新增后最低余额</p>
-                        <p
-                          className={`text-base font-semibold tabular-nums ${
-                            impactResult.withExpense.minBalance < Number(impactSafetyLine || 0) ? 'text-destructive' : 'text-foreground'
-                          }`}
-                        >
-                          ¥{Math.round(impactResult.withExpense.minBalance).toLocaleString()}
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-1">{impactResult.withExpense.minDate}</p>
-                      </div>
-                      <div className="rounded-lg border p-3">
-                        <p className="text-xs text-muted-foreground">最低余额变化</p>
-                        <p className="text-base font-semibold tabular-nums">¥{Math.round(impactResult.delta.minBalance).toLocaleString()}</p>
-                        <p className="text-xs text-muted-foreground mt-1">
-                          期末变化 ¥{Math.round(impactResult.delta.endBalance).toLocaleString()}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            <DialogFooter className="gap-2 sm:gap-0">
-              {editingMeta?.transactionType === 'installment_bill' && editingMeta.installmentPlanId && (
-                <Button
-                  type="button"
-                  variant="destructive"
-                  onClick={() => void deleteInstallmentPlan()}
-                  disabled={currentPlanStarted}
-                >
-                  删除整组分期
-                </Button>
-              )}
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  setDialogOpen(false);
-                  setEditingId(null);
-                  setEditingMeta(null);
-                  setForm(EMPTY_FORM);
-                }}
-              >
-                取消
-              </Button>
-              <Button type="submit" disabled={submitting}>
-                {submitting ? '保存中...' : editingId ? '更新' : '添加'}
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-
-      {/* Delete Confirm */}
+      {/* Delete Alert */}
       <AlertDialog open={!!deleteTarget} onOpenChange={() => setDeleteTarget(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
             <AlertDialogTitle>确认删除</AlertDialogTitle>
             <AlertDialogDescription>
-              删除后不可恢复，确定要删除这条交易记录吗？
+              {deleteTarget?.installmentPlanId && deleteScope === 'plan'
+                ? '确定要删除整组分期的所有记录吗？已执行的分期日期无法撤销。'
+                : '确定要删除这笔交易记录吗？此操作不可撤销。'}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>取消</AlertDialogCancel>
-            <AlertDialogAction
-              onClick={() => void handleDelete('single')}
-              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
-            >
+            <AlertDialogCancel onClick={() => setDeleteTarget(null)}>取消</AlertDialogCancel>
+            <AlertDialogAction onClick={confirmDelete} className="bg-destructive text-destructive-foreground hover:bg-destructive/90">
               删除
             </AlertDialogAction>
           </AlertDialogFooter>
@@ -1306,4 +640,6 @@ export default function TransactionsPage() {
       </AlertDialog>
     </div>
   );
-}
+};
+
+export default TransactionsPage;

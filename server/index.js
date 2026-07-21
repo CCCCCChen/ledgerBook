@@ -4,7 +4,7 @@ const cors = require('cors');
 const path = require('path');
 const { initDatabase } = require('./db');
 const accountsRouter = require('./routes/accounts');
-const transactionsRouter = require('./routes/transactions');
+const transactionsRouter = require('./routes/transactions.cjs');
 const budgetsRouter = require('./routes/budgets');
 const statisticsRouter = require('./routes/statistics');
 

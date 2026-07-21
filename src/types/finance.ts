@@ -15,11 +15,19 @@ export type AccountType =
   | 'alipay_balance'
   | 'wechat_balance'
   | 'credit_card'
-  | 'debit_card';
+  | 'debit_card'
+  | 'debit'
+  | 'huabei';
 
 export type BudgetCycleType = 'once' | 'weekly' | 'monthly' | 'yearly' | 'custom';
 
-export type TransactionType = 'normal' | 'repayment_out' | 'repayment_in' | 'installment_bill' | 'income';
+export type TransactionType =
+  | 'normal'
+  | 'repayment_out'
+  | 'repayment_in'
+  | 'installment_bill'
+  | 'income'
+  | 'transfer';
 
 export type BudgetTag = 'normal' | 'long_term_over' | 'over_budget' | 'under_spent' | 'reasonable';
 
@@ -30,7 +38,7 @@ export interface ITransaction {
   accountId: string;
   amount: number;
   category: TransactionCategory;
-  expenseAttribute?: ExpenseAttribute; // 支出属性：刚性/弹性/年度/突发
+  expenseAttribute?: ExpenseAttribute;
   note: string;
   isBudgeted: boolean;
   budgetId?: string;
@@ -41,6 +49,10 @@ export interface ITransaction {
   installmentIndex?: number;
   installmentTotal?: number;
   installmentFee?: number;
+  installmentCount?: number;
+  feeTotal?: number;
+  repaymentTargetAccountId?: string;
+  isExpense?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -54,7 +66,7 @@ export interface IBudget {
   endDate?: string;
   cycleDays?: number;
   category?: TransactionCategory;
-  tag?: BudgetTag; // 预算标签：长期超支/预算过剩等
+  tag?: BudgetTag;
   createdAt: string;
   updatedAt: string;
 }
@@ -63,15 +75,18 @@ export interface IAccount {
   id: string;
   name: string;
   type: AccountType;
+  balance?: number;
+  creditLimit?: number;
   billingDay?: number;
   repaymentDay?: number;
+  cashOutDelayDays?: number;
   note: string;
-  totalDebt?: number; // 当前总欠款金额（仅信用账户）
-  installmentTotalPeriods?: number; // 分期总期数
-  installmentRemainingPeriods?: number; // 剩余分期期数
-  installmentMonthlyPayment?: number; // 每月分期月供
-  installmentTotalInterest?: number; // 分期总利息
-  monthlyInterest?: number; // 每月利息支出
+  totalDebt?: number;
+  installmentTotalPeriods?: number;
+  installmentRemainingPeriods?: number;
+  installmentMonthlyPayment?: number;
+  installmentTotalInterest?: number;
+  monthlyInterest?: number;
   createdAt: string;
   updatedAt: string;
 }

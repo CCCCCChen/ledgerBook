@@ -19,12 +19,20 @@ export interface CreatePlannedExpenseInput extends Partial<IPlannedExpense> {}
 
 export interface UpdatePlannedExpenseInput extends Partial<IPlannedExpense> {}
 
+export interface AccountDebtInfo {
+  accountId: string;
+  totalDebt: number;
+  installmentMonthlyPayment: number;
+  installmentTotalPeriods: number;
+}
+
 // ============================================================
 // 账户 API
 // ============================================================
 export const accountsApi = {
   list: () => api.get<{ success: boolean; data: IAccount[] }>('/api/accounts'),
   get: (id: string) => api.get<{ success: boolean; data: IAccount }>(`/api/accounts/${id}`),
+  debt: (id: string) => api.get<{ success: boolean; data: AccountDebtInfo }>(`/api/accounts/${id}/debt`),
   create: (data: Partial<IAccount>) => api.post<{ success: boolean; data: IAccount }>('/api/accounts', data),
   update: (id: string, data: Partial<IAccount>) => api.put<{ success: boolean; data: IAccount }>(`/api/accounts/${id}`, data),
   remove: (id: string) => api.delete<{ success: boolean }>(`/api/accounts/${id}`),
@@ -40,6 +48,16 @@ export interface TransactionFilters {
   dateTo?: string;
   keyword?: string;
   sortOrder?: 'asc' | 'desc';
+  page?: number;
+  limit?: number;
+}
+
+export interface TransactionListResponse {
+  success: boolean;
+  data: ITransaction[];
+  total: number;
+  page: number;
+  limit: number;
 }
 
 export const transactionsApi = {
@@ -51,8 +69,10 @@ export const transactionsApi = {
     if (filters?.dateTo) params.set('dateTo', filters.dateTo);
     if (filters?.keyword) params.set('keyword', filters.keyword);
     if (filters?.sortOrder) params.set('sortOrder', filters.sortOrder);
+    if (filters?.page != null) params.set('page', String(filters.page));
+    if (filters?.limit != null) params.set('limit', String(filters.limit));
     const qs = params.toString();
-    return api.get<{ success: boolean; data: ITransaction[] }>(`/api/transactions${qs ? `?${qs}` : ''}`);
+    return api.get<TransactionListResponse>(`/api/transactions${qs ? `?${qs}` : ''}`);
   },
   get: (id: string) => api.get<{ success: boolean; data: ITransaction }>(`/api/transactions/${id}`),
   create: (data: CreateTransactionInput) => api.post<{ success: boolean; data: ITransaction; items?: ITransaction[] }>('/api/transactions', data),

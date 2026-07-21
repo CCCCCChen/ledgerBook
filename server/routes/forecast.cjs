@@ -3,31 +3,15 @@ const router = express.Router();
 const { getDatabase } = require('../db.cjs');
 const { mapBudgetRow, getBudgetCycleWindow } = require('../finance-utils.cjs');
 const { resolveAccountCashOutDate } = require('../cashflow-utils.cjs');
-
-function parseISODate(date) {
-  return new Date(`${date}T00:00:00`);
-}
-
-function formatLocalISODate(date) {
-  const y = date.getFullYear();
-  const m = String(date.getMonth() + 1).padStart(2, '0');
-  const d = String(date.getDate()).padStart(2, '0');
-  return `${y}-${m}-${d}`;
-}
-
-function addDays(date, days) {
-  const next = new Date(date);
-  next.setDate(next.getDate() + days);
-  return next;
-}
+const { parseISODate, formatISODate, addDays } = require('../../shared/installment-utils.cjs');
 
 function listDates(rangeFrom, rangeTo) {
   const from = parseISODate(rangeFrom);
   const to = parseISODate(rangeTo);
   const result = [];
   let cursor = from;
-  while (formatLocalISODate(cursor) <= rangeTo) {
-    result.push(formatLocalISODate(cursor));
+  while (formatISODate(cursor) <= rangeTo) {
+    result.push(formatISODate(cursor));
     cursor = addDays(cursor, 1);
     if (result.length > 5000) break;
   }
@@ -56,10 +40,22 @@ function buildBudgetSettlementsForRange(db, rangeFrom, rangeTo) {
   const fromDate = parseISODate(rangeFrom);
   const toISO = rangeTo;
 
+  // 批量查询所有 budget 的 transactions，按 budget_id 内存分组（修复 N+1 查询）
+  const allBudgetTxns = db
+    .prepare('SELECT budget_id, date, amount FROM transactions WHERE amount < 0 AND budget_id IS NOT NULL')
+    .all();
+  const txnsByBudget = new Map();
+  allBudgetTxns.forEach((t) => {
+    const list = txnsByBudget.get(t.budget_id);
+    if (list) {
+      list.push(t);
+    } else {
+      txnsByBudget.set(t.budget_id, [t]);
+    }
+  });
+
   budgets.forEach((budget) => {
-    const budgetTransactions = db
-      .prepare('SELECT date, amount FROM transactions WHERE amount < 0 AND budget_id = ?')
-      .all(budget.id);
+    const budgetTransactions = txnsByBudget.get(budget.id) || [];
 
     if (budget.cycleType === 'once') {
       if (!budget.endDate) return;
@@ -83,7 +79,7 @@ function buildBudgetSettlementsForRange(db, rangeFrom, rangeTo) {
       cursor = parseISODate(seed.start);
     }
 
-    while (formatLocalISODate(cursor) <= toISO) {
+    while (formatISODate(cursor) <= toISO) {
       const window = getBudgetCycleWindow(budget, cursor);
       if (!window) break;
       if (window.end >= rangeFrom && window.end <= rangeTo) {

@@ -101,7 +101,22 @@ function startServer() {
     let started = false;
     const timeout = setTimeout(() => {
       if (!started) {
-        reject(new Error('后端服务启动超时（15 秒）'));
+        // 兜底：直接尝试 HTTP 连接，避免 stdout buffering 导致误判超时
+        const http = require('http');
+        const checkUrl = `http://127.0.0.1:${SERVER_PORT}`;
+        const req = http.get(checkUrl, (res) => {
+          res.resume();
+          started = true;
+          serverUrl = checkUrl;
+          resolve(serverUrl);
+        });
+        req.on('error', () => {
+          reject(new Error('后端服务启动超时（15 秒）'));
+        });
+        req.setTimeout(3000, () => {
+          req.destroy();
+          reject(new Error('后端服务启动超时（15 秒）'));
+        });
       }
     }, 15000);
 

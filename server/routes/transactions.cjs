@@ -197,43 +197,52 @@ function insertTransactions(db, items) {
   insertMany(items);
 }
 
-// GET /api/transactions — 获取交易记录列表，支持筛选
+// GET /api/transactions — 获取交易记录列表，支持筛选与分页
 router.get('/', (req, res) => {
   try {
     const db = getDatabase();
-    const { accountId, category, dateFrom, dateTo, keyword, sortOrder } = req.query;
+    const { accountId, category, dateFrom, dateTo, keyword, sortOrder, page: pageParam, limit: limitParam } = req.query;
 
-    let sql = 'SELECT * FROM transactions WHERE 1=1';
+    let whereClause = 'WHERE 1=1';
     const params = [];
 
     if (accountId) {
-      sql += ' AND account_id = ?';
+      whereClause += ' AND account_id = ?';
       params.push(accountId);
     }
     if (category) {
-      sql += ' AND category = ?';
+      whereClause += ' AND category = ?';
       params.push(category);
     }
     if (dateFrom) {
-      sql += ' AND date >= ?';
+      whereClause += ' AND date >= ?';
       params.push(dateFrom);
     }
     if (dateTo) {
-      sql += ' AND date <= ?';
+      whereClause += ' AND date <= ?';
       params.push(dateTo);
     }
     if (keyword) {
-      sql += ' AND (note LIKE ? OR category LIKE ?)';
+      whereClause += ' AND (note LIKE ? OR category LIKE ?)';
       const kw = `%${keyword}%`;
       params.push(kw, kw);
     }
 
-    const order = sortOrder === 'asc' ? 'ASC' : 'DESC';
-    sql += ` ORDER BY date ${order}, created_at ${order}`;
+    // 先查总数
+    const countSql = `SELECT COUNT(*) AS total FROM transactions ${whereClause}`;
+    const { total } = db.prepare(countSql).get(...params);
 
-    const rows = db.prepare(sql).all(...params);
+    const order = sortOrder === 'asc' ? 'ASC' : 'DESC';
+    const page = Math.max(1, parseInt(pageParam, 10) || 1);
+    const limit = Math.min(200, Math.max(1, parseInt(limitParam, 10) || 50));
+    const offset = (page - 1) * limit;
+
+    const dataSql = `SELECT * FROM transactions ${whereClause} ORDER BY date ${order}, created_at ${order} LIMIT ? OFFSET ?`;
+    const dataParams = [...params, limit, offset];
+
+    const rows = db.prepare(dataSql).all(...dataParams);
     const mapped = rows.map(mapTransaction);
-    res.json({ success: true, data: mapped });
+    res.json({ success: true, data: mapped, total, page, limit });
   } catch (error) {
     console.error('GET /api/transactions error:', error.message);
     res.status(500).json({ success: false, message: '获取交易记录失败', error: error.message });

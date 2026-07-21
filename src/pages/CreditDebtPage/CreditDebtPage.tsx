@@ -10,16 +10,33 @@ import { loadAccounts, loadTransactions } from '@/lib/data-service';
 import { formatLocalISOYearMonth, formatLocalISODate } from '@/lib/date';
 import { getBillingCycleRange } from '@/lib/finance-utils';
 import { getEffectiveTransactionDate } from '@/lib/cashflow';
+import { accountsApi, type AccountDebtInfo } from '@/api/index';
 
 export default function CreditDebtPage() {
   const [accounts, setAccounts] = useState<IAccount[]>([]);
   const [transactions, setTransactions] = useState<ITransaction[]>([]);
+  const [debtData, setDebtData] = useState<Map<string, AccountDebtInfo>>(new Map());
   const [prepayAmount, setPrepayAmount] = useState('1000');
 
   useEffect(() => {
     void Promise.all([loadTransactions(), loadAccounts()]).then(([txns, accts]) => {
       setTransactions(txns);
       setAccounts(accts);
+      // 为每个信用账户加载负债聚合数据
+      const creditAccts = accts.filter(
+        (a) => a.type === 'credit_card' || a.type === 'alipay_huabei'
+      );
+      void Promise.all(
+        creditAccts.map((a) =>
+          accountsApi.debt(a.id).then((res) => (res.success ? { id: a.id, data: res.data } : null))
+        )
+      ).then((results) => {
+        const map = new Map<string, AccountDebtInfo>();
+        results.forEach((r) => {
+          if (r) map.set(r.id, r.data);
+        });
+        setDebtData(map);
+      });
     });
   }, []);
 
@@ -145,16 +162,21 @@ export default function CreditDebtPage() {
     let monthlyInterest = 0;
     let totalInterest = 0;
 
+    // 从 API 负债数据汇总
+    debtData.forEach((info) => {
+      totalDebt += info.totalDebt;
+      totalInstallmentPayment += info.installmentMonthlyPayment;
+    });
+
+    // 从客户端计算本月待还和利息
     Object.values(creditStats).forEach((stat) => {
-      totalDebt += stat.totalDebt;
       monthlyRepayment += stat.monthlyRepayment;
-      totalInstallmentPayment += stat.monthlyInstallment;
       monthlyInterest += stat.monthlyInterest;
       totalInterest += stat.totalInterest;
     });
 
     return { totalDebt, monthlyRepayment, totalInstallmentPayment, monthlyInterest, totalInterest };
-  }, [creditStats]);
+  }, [creditStats, debtData]);
 
   const repaymentPressureRows = useMemo(() => {
     const incomeBase = 15000; // 后续可改为可配置或从历史收入推断
@@ -277,14 +299,15 @@ export default function CreditDebtPage() {
                   <tbody>
                     {creditAccounts.map((account) => {
                       const stat = creditStats[account.id] || { totalDebt: 0, monthlyRepayment: 0, monthlyInstallment: 0, monthlyInterest: 0, totalInterest: 0 };
+                      const apiDebt = debtData.get(account.id);
                       return (
                         <tr key={account.id} className="border-b last:border-b-0">
                           <td className="py-3 pr-4 font-medium">{account.name}</td>
-                          <td className="py-3 pr-4 tabular-nums text-destructive">¥{stat.totalDebt.toFixed(0).toLocaleString()}</td>
+                          <td className="py-3 pr-4 tabular-nums text-destructive">¥{(apiDebt?.totalDebt ?? stat.totalDebt).toFixed(0).toLocaleString()}</td>
                           <td className="py-3 pr-4 tabular-nums">¥{stat.monthlyRepayment.toFixed(0).toLocaleString()}</td>
                           <td className="py-3 pr-4">{account.billingDay || '-'}</td>
                           <td className="py-3 pr-4">{account.repaymentDay || '-'}</td>
-                          <td className="py-3 pr-4 tabular-nums">¥{stat.monthlyInstallment.toFixed(0).toLocaleString()}</td>
+                          <td className="py-3 pr-4 tabular-nums">¥{(apiDebt?.installmentMonthlyPayment ?? stat.monthlyInstallment).toFixed(0).toLocaleString()}</td>
                           <td className="py-3 pr-4 tabular-nums text-destructive">¥{stat.monthlyInterest.toFixed(0).toLocaleString()}</td>
                           <td className="py-3 tabular-nums text-destructive">¥{stat.totalInterest.toFixed(0).toLocaleString()}</td>
                         </tr>

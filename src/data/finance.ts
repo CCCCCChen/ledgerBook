@@ -10,6 +10,8 @@ export const ACCOUNT_TYPE_LABELS: Record<AccountType, string> = {
   wechat_balance: '微信余额',
   credit_card: '信用卡',
   debit_card: '储蓄卡',
+  debit: '储蓄卡',
+  huabei: '花呗',
 };
 
 export const BUDGET_CYCLE_LABELS: Record<BudgetCycleType, string> = {

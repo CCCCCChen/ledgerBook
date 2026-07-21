@@ -283,6 +283,19 @@ function initDatabase(dbPathOrDir, allowRecovery = true) {
       );
     `);
 
+    // ---- 创建索引 ----（优化查询性能）
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_transactions_account_id ON transactions(account_id);
+      CREATE INDEX IF NOT EXISTS idx_transactions_budget_id ON transactions(budget_id);
+      CREATE INDEX IF NOT EXISTS idx_transactions_date ON transactions(date);
+      CREATE INDEX IF NOT EXISTS idx_transactions_cash_out_date ON transactions(cash_out_date);
+      CREATE INDEX IF NOT EXISTS idx_planned_expenses_account_id ON planned_expenses(account_id);
+      CREATE INDEX IF NOT EXISTS idx_planned_expenses_planned_date ON planned_expenses(planned_date);
+      CREATE INDEX IF NOT EXISTS idx_transactions_date_account_id ON transactions(date, account_id);
+      CREATE INDEX IF NOT EXISTS idx_transactions_amount_cash_out_date ON transactions(amount, cash_out_date);
+      CREATE INDEX IF NOT EXISTS idx_budgets_category ON budgets(category);
+    `);
+
     migrateAccountsTable();
     migrateBudgetsTableIfNeeded();
     migrateTransactionsTable();

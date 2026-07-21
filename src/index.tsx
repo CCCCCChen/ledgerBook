@@ -27,6 +27,7 @@ function RootErrorFallback({
         <p className="text-sm text-muted-foreground">页面初始化失败，请重试。</p>
         <pre className="overflow-auto rounded-md border bg-muted p-4 text-xs text-muted-foreground">
           {error.message}
+          {error.stack ? '\n\n' + error.stack : null}
         </pre>
         <button
           type="button"
