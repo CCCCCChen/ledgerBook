@@ -214,7 +214,13 @@ export async function loadTransactions(filters?: TransactionFilters): Promise<IT
   if (isElectron()) {
     try {
       const res = await transactionsApi.list(filters);
-      return res.data;
+      // 基于当前账户数据归一化 cashOutDate
+      const accounts = await loadAccounts();
+      const accountMap = new Map(accounts.map((account) => [account.id, account]));
+      return res.data.map((transaction) => ({
+        ...transaction,
+        cashOutDate: resolveTransactionCashOutDate(transaction, accountMap.get(transaction.accountId)) || undefined,
+      }));
     } catch {
       return lsLoadTransactions();
     }
