@@ -1,6 +1,7 @@
-import { useState, useEffect, useCallback, type FormEvent } from 'react';
+import { useState, useEffect, useCallback, useMemo, type FormEvent } from 'react';
 import { toast } from 'sonner';
-import { Plus, Pencil, Trash2, CreditCard, Building2, Smartphone, Landmark, Wallet } from 'lucide-react';
+import ReactECharts from 'echarts-for-react';
+import { Plus, Pencil, Trash2, CreditCard, Building2, Smartphone, Landmark, Wallet, PieChart, TrendingUp, TrendingDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import {
@@ -32,8 +33,8 @@ import {
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { ACCOUNT_TYPE_LABELS } from '@/data/finance';
-import type { IAccount, AccountType } from '@/types/finance';
-import { createAccount, deleteAccount, loadAccounts, updateAccount } from '@/lib/data-service';
+import type { IAccount, AccountType, ITransaction } from '@/types/finance';
+import { createAccount, deleteAccount, loadAccounts, loadTransactions, updateAccount } from '@/lib/data-service';
 
 const ACCOUNT_TYPES: { value: AccountType; label: string; icon: typeof CreditCard }[] = [
   { value: 'alipay_huabei', label: '支付宝花呗', icon: CreditCard },
@@ -81,15 +82,70 @@ function needsBillingDay(type: AccountType): boolean {
 
 export default function AccountsPage() {
   const [accounts, setAccounts] = useState<IAccount[]>([]);
+  const [transactions, setTransactions] = useState<ITransaction[]>([]);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [form, setForm] = useState<AccountFormData>(EMPTY_FORM);
   const [deleteTarget, setDeleteTarget] = useState<IAccount | null>(null);
+
+  const assetOverview = useMemo(() => {
+    let totalAssets = 0;
+    let totalDebt = 0;
+
+    const byGroup: Record<string, { label: string; value: number; isDebt: boolean }> = {
+      debit_card: { label: '储蓄卡', value: 0, isDebt: false },
+      alipay_balance: { label: '支付宝余额', value: 0, isDebt: false },
+      wechat_balance: { label: '微信余额', value: 0, isDebt: false },
+      credit_card: { label: '信用卡负债', value: 0, isDebt: true },
+      alipay_huabei: { label: '花呗负债', value: 0, isDebt: true },
+    };
+
+    accounts.forEach(acc => {
+      if (acc.type === 'credit_card' || acc.type === 'alipay_huabei') {
+        const debt = (acc as any).totalDebt || 0;
+        totalDebt += debt;
+        if (byGroup[acc.type]) byGroup[acc.type].value += debt;
+      } else {
+        const accTxns = transactions.filter(t => t.accountId === acc.id);
+        const balance = accTxns.reduce((sum, t) => sum + t.amount, 0);
+        if (balance > 0) {
+          totalAssets += balance;
+          if (byGroup[acc.type]) byGroup[acc.type].value += balance;
+        }
+      }
+    });
+
+    const netWorth = totalAssets - totalDebt;
+    const debtRatio = totalAssets > 0 ? Math.round((totalDebt / totalAssets) * 100) : 0;
+
+    return { totalAssets, totalDebt, netWorth, debtRatio, byGroup };
+  }, [accounts, transactions]);
+
+  const assetPieOption = useMemo(() => {
+    const assetItems = Object.entries(assetOverview.byGroup)
+      .filter(([_, v]) => !v.isDebt && v.value > 0)
+      .map(([k, v]) => ({ name: v.label, value: v.value }));
+
+    if (assetItems.length === 0) return null;
+
+    return {
+      tooltip: { trigger: 'item' as const, formatter: '{b}: ¥{c} ({d}%)' },
+      series: [{
+        type: 'pie',
+        radius: ['45%', '70%'],
+        data: assetItems,
+        label: { formatter: '{b}\n¥{c}' },
+        emphasis: { label: { fontSize: 14, fontWeight: 'bold' } },
+      }],
+    };
+  }, [assetOverview]);
+
   const [submitting, setSubmitting] = useState(false);
 
   const refresh = useCallback(async () => {
-    const data = await loadAccounts();
+    const [data, txns] = await Promise.all([loadAccounts(), loadTransactions()]);
     setAccounts(data);
+    setTransactions(txns);
   }, []);
 
   useEffect(() => {
@@ -203,6 +259,70 @@ export default function AccountsPage() {
           添加账户
         </Button>
       </div>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Wallet className="size-5 text-primary" />
+            资产总览
+          </CardTitle>
+          <CardDescription>全部账户的资产、负债与配置分布</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <div className="space-y-4">
+              <div className="rounded-lg border p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <TrendingUp className="size-4 text-success" />
+                  <span className="text-sm text-muted-foreground">总资产</span>
+                </div>
+                <p className="text-2xl font-bold tabular-nums text-success">
+                  ¥{assetOverview.totalAssets > 0 ? Math.round(assetOverview.totalAssets).toLocaleString() : 0}
+                </p>
+              </div>
+              <div className="rounded-lg border p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <TrendingDown className="size-4 text-destructive" />
+                  <span className="text-sm text-muted-foreground">总负债</span>
+                </div>
+                <p className="text-2xl font-bold tabular-nums text-destructive">
+                  ¥{assetOverview.totalDebt > 0 ? Math.round(assetOverview.totalDebt).toLocaleString() : 0}
+                </p>
+              </div>
+              <div className="rounded-lg border p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Wallet className="size-4 text-primary" />
+                  <span className="text-sm text-muted-foreground">净资产</span>
+                </div>
+                <p className={`text-2xl font-bold tabular-nums ${assetOverview.netWorth >= 0 ? 'text-success' : 'text-destructive'}`}>
+                  ¥{Math.round(assetOverview.netWorth).toLocaleString()}
+                </p>
+              </div>
+              <div className="rounded-lg border p-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <PieChart className="size-4 text-primary" />
+                  <span className="text-sm text-muted-foreground">资产负债比</span>
+                </div>
+                <p className={`text-2xl font-bold tabular-nums ${assetOverview.debtRatio > 50 ? 'text-destructive' : 'text-success'}`}>
+                  {assetOverview.debtRatio}%
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  {assetOverview.debtRatio > 50 ? '负债偏高，注意风险' : '负债在可控范围内'}
+                </p>
+              </div>
+            </div>
+            <div className="lg:col-span-2">
+              {assetPieOption ? (
+                <ReactECharts option={assetPieOption} style={{ height: 280 }} />
+              ) : (
+                <div className="h-[280px] flex items-center justify-center text-sm text-muted-foreground">
+                  暂无资产数据
+                </div>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
 
       {/* 账户卡片列表 */}
       {accounts.length === 0 ? (

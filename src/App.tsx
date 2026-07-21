@@ -3,11 +3,10 @@ import { Layout } from "@/components/Layout";
 import NotFoundPage from "@/pages/NotFoundPage/NotFoundPage";
 import TransactionsPage from "@/pages/TransactionsPage/TransactionsPage";
 import BudgetsPage from "@/pages/BudgetsPage/BudgetsPage";
-import StatisticsPage from "@/pages/StatisticsPage/StatisticsPage";
+import DashboardPage from "@/pages/DashboardPage/DashboardPage";
 import AccountsPage from "@/pages/AccountsPage/AccountsPage";
 import ForecastPage from "@/pages/ForecastPage/ForecastPage";
 import CreditDebtPage from "@/pages/CreditDebtPage/CreditDebtPage";
-import CashFlowPage from "@/pages/CashFlowPage/CashFlowPage";
 
 export default function App() {
   return (
@@ -16,10 +15,9 @@ export default function App() {
         <Route index element={<TransactionsPage />} />
         <Route path="budgets" element={<BudgetsPage />} />
         <Route path="forecast" element={<ForecastPage />} />
-        <Route path="statistics" element={<StatisticsPage />} />
+        <Route path="dashboard" element={<DashboardPage />} />
         <Route path="credit-debt" element={<CreditDebtPage />} />
         <Route path="accounts" element={<AccountsPage />} />
-        <Route path="cash-flow" element={<CashFlowPage />} />
       </Route>
       <Route path="*" element={<NotFoundPage />} />
     </Routes>

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Pencil, Trash2, TrendingUp } from 'lucide-react';
+import { Plus, Pencil, Trash2, TrendingUp, TrendingDown, DollarSign, ArrowUpRight, ArrowDownRight, Target, Calendar, Edit2 } from 'lucide-react';
 import { toast } from 'sonner';
 import ReactECharts from 'echarts-for-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -35,7 +35,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Textarea } from '@/components/ui/textarea';
-import type { IAccount, IBudget, IPlannedExpense, ITransaction, TransactionCategory } from '@/types/finance';
+import type { IAccount, IBudget, IIncomeBudgetProjection, IPlannedExpense, ITransaction, TransactionCategory } from '@/types/finance';
 import { DEFAULT_CATEGORIES } from '@/data/finance';
 import {
   createPlannedExpense,
@@ -46,10 +46,11 @@ import {
   loadTransactions,
   updatePlannedExpense,
 } from '@/lib/data-service';
+import { loadSavingsGoal, saveSavingsGoal, deleteSavingsGoal, type SavingsGoal } from '@/lib/goal-service';
 import { listBudgetSettlementsForRange } from '@/lib/finance-utils';
 import { formatLocalISODate, nowLocalISODate } from '@/lib/date';
 import { getEffectiveTransactionDate } from '@/lib/cashflow';
-import { forecastApi } from '@/api';
+import { forecastApi, incomeBudgetsApi } from '@/api';
 
 interface ForecastItem {
   id: string;
@@ -88,6 +89,8 @@ export default function ForecastPage() {
   const [budgets, setBudgets] = useState<IBudget[]>([]);
   const [accounts, setAccounts] = useState<IAccount[]>([]);
   const [plannedExpenses, setPlannedExpenses] = useState<IPlannedExpense[]>([]);
+  const [savingsGoal, setSavingsGoal] = useState<SavingsGoal | null>(null);
+  const [monthlyProjections, setMonthlyProjections] = useState<IIncomeBudgetProjection[]>([]);
   const [rangeFrom, setRangeFrom] = useState(monthStartISO);
   const [rangeTo, setRangeTo] = useState(monthEndISO);
   const [includeBudgetSettlement, setIncludeBudgetSettlement] = useState(true);
@@ -100,6 +103,11 @@ export default function ForecastPage() {
     accountId: '',
   });
   const [impactLoading, setImpactLoading] = useState(false);
+  const [goalFormOpen, setGoalFormOpen] = useState(false);
+  const [goalForm, setGoalForm] = useState<{ targetAmount: string; deadline: string }>({
+    targetAmount: '',
+    deadline: '',
+  });
   const [impactResult, setImpactResult] = useState<ImpactResult | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -115,16 +123,18 @@ export default function ForecastPage() {
 
   const refreshAll = useCallback(async () => {
     try {
-      const [txns, bdgs, accts, planned] = await Promise.all([
+      const [txns, bdgs, accts, planned, projections] = await Promise.all([
         loadTransactions(),
         loadBudgets(),
         loadAccounts(),
         loadPlannedExpenses(),
+        incomeBudgetsApi.projection(rangeFrom, rangeTo),
       ]);
       setTransactions(txns);
       setBudgets(bdgs);
       setAccounts(accts);
       setPlannedExpenses(planned);
+      setMonthlyProjections(projections || []);
     } catch (error) {
       toast.error(`加载预测数据失败：${String(error)}`);
     }
@@ -133,6 +143,41 @@ export default function ForecastPage() {
   useEffect(() => {
     void refreshAll();
   }, [refreshAll]);
+
+  useEffect(() => {
+    setSavingsGoal(loadSavingsGoal());
+  }, []);
+
+  const monthlyProjectionTable = useMemo(() => {
+    const now = new Date();
+    const historyTxns = transactions.filter(t => {
+      const d = new Date(t.date);
+      const cutoff = new Date(now);
+      cutoff.setMonth(cutoff.getMonth() - 3);
+      return d >= cutoff && t.amount < 0;
+    });
+    const avgExpense = historyTxns.length > 0
+      ? Math.round(Math.abs(historyTxns.reduce((s, t) => s + t.amount, 0)) / 3)
+      : 0;
+
+    const monthMap: Record<string, { income: number }> = {};
+    monthlyProjections.forEach(p => {
+      const month = p.projectionDate.substring(0, 7);
+      if (!monthMap[month]) monthMap[month] = { income: 0 };
+      monthMap[month].income += p.amount;
+    });
+
+    const months = Object.entries(monthMap).sort(([a], [b]) => a.localeCompare(b));
+    const data = [];
+    let balance = Number(startBalance || 0);
+    for (const [month, { income }] of months) {
+      const expense = avgExpense;
+      const netFlow = income - expense;
+      balance += netFlow;
+      data.push({ month, income, expense, netFlow, balance });
+    }
+    return data;
+  }, [monthlyProjections, transactions, startBalance]);
 
   const futureFrom = useMemo(() => (todayISO > rangeFrom ? todayISO : rangeFrom), [todayISO, rangeFrom]);
   const [simulateFrom, setSimulateFrom] = useState(futureFrom);
@@ -357,6 +402,29 @@ export default function ForecastPage() {
   }, [futureExpenseTransactions, futurePlannedExpenses, budgetSettlementItems]);
 
   const expectedOutflow = useMemo(() => forecastItems.reduce((sum, item) => sum + item.amount, 0), [forecastItems]);
+
+  const goalAnalysis = useMemo(() => {
+    if (!savingsGoal) return null;
+
+    const endBalance = monthlyProjectionTable.length > 0
+      ? monthlyProjectionTable[monthlyProjectionTable.length - 1].balance
+      : Number(startBalance || 0);
+
+    const gap = savingsGoal.targetAmount - endBalance;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    const deadline = new Date(`${savingsGoal.deadline}T00:00:00`);
+    const diffMs = deadline.getTime() - today.getTime();
+    const monthsRemaining = Math.max(1, Math.ceil(diffMs / (30.44 * 24 * 60 * 60 * 1000)));
+
+    const monthlyExtra = gap > 0 ? Math.ceil(gap / monthsRemaining) : 0;
+    const progress = savingsGoal.targetAmount > 0
+      ? Math.min(100, Math.round((endBalance / savingsGoal.targetAmount) * 100))
+      : 0;
+
+    return { endBalance, gap, monthsRemaining, monthlyExtra, progress };
+  }, [savingsGoal, monthlyProjectionTable, startBalance]);
+
   const sortedPlannedExpenses = useMemo(
     () => [...plannedExpenses].sort((a, b) => (a.cashOutDate || a.plannedDate).localeCompare(b.cashOutDate || b.plannedDate)),
     [plannedExpenses],
@@ -372,6 +440,11 @@ export default function ForecastPage() {
       category: '其他',
       note: '',
     });
+  };
+
+  const resetGoalForm = () => {
+    setGoalForm({ targetAmount: '', deadline: '' });
+    setGoalFormOpen(false);
   };
 
   const openCreateDialog = () => {
@@ -437,6 +510,33 @@ export default function ForecastPage() {
     toast.success('预估支出已删除');
     setDeleteTarget(null);
     await refreshAll();
+  };
+
+  const handleSaveGoal = () => {
+    const amount = Number(goalForm.targetAmount);
+    if (!amount || amount <= 0) {
+      toast.error('请输入有效目标金额');
+      return;
+    }
+    if (!goalForm.deadline) {
+      toast.error('请选择截止日期');
+      return;
+    }
+    const goal: SavingsGoal = {
+      targetAmount: amount,
+      deadline: goalForm.deadline,
+      createdAt: savingsGoal?.createdAt || new Date().toISOString(),
+    };
+    saveSavingsGoal(goal);
+    setSavingsGoal(goal);
+    resetGoalForm();
+    toast.success('储蓄目标已保存');
+  };
+
+  const handleDeleteGoal = () => {
+    deleteSavingsGoal();
+    setSavingsGoal(null);
+    toast.success('储蓄目标已清除');
   };
 
   const runImpact = async (override?: Partial<{ date: string; amount: string; accountId: string }>) => {
@@ -658,6 +758,273 @@ export default function ForecastPage() {
             ) : (
               <p className="text-sm text-muted-foreground">填入一笔消费后点击“查看影响”。</p>
             )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>月度收支预测</CardTitle>
+            <CardDescription>基于收入预算和历史支出数据，预测未来月度现金流</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {monthlyProjectionTable.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-8">暂无收入预算数据，请在预算页设置收入预算后查看</p>
+            ) : (
+              <>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+                  <div className="rounded-lg border p-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <TrendingUp className="size-4 text-success" />
+                      <span className="text-xs text-muted-foreground">预计总收入</span>
+                    </div>
+                    <p className="text-lg font-bold text-success tabular-nums">
+                      ¥{monthlyProjectionTable.reduce((s, d) => s + d.income, 0).toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <TrendingDown className="size-4 text-destructive" />
+                      <span className="text-xs text-muted-foreground">预计总支出</span>
+                    </div>
+                    <p className="text-lg font-bold text-destructive tabular-nums">
+                      ¥{monthlyProjectionTable.reduce((s, d) => s + d.expense, 0).toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <DollarSign className="size-4 text-primary" />
+                      <span className="text-xs text-muted-foreground">期末余额</span>
+                    </div>
+                    <p className="text-lg font-bold tabular-nums">
+                      ¥{monthlyProjectionTable.length > 0 ? monthlyProjectionTable[monthlyProjectionTable.length - 1].balance.toLocaleString() : '0'}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <TrendingDown className="size-4 text-yellow-500" />
+                      <span className="text-xs text-muted-foreground">最低余额</span>
+                    </div>
+                    <p className={`text-lg font-bold tabular-nums ${Math.min(...monthlyProjectionTable.map(d => d.balance)) < 0 ? 'text-destructive' : ''}`}>
+                      ¥{Math.min(...monthlyProjectionTable.map(d => d.balance)).toLocaleString()}
+                    </p>
+                  </div>
+                </div>
+                {monthlyProjectionTable.map(item => (
+                  <div key={item.month} className="flex items-center justify-between p-3 rounded-lg bg-secondary/30 hover:bg-secondary/50 transition-colors">
+                    <div className="font-medium text-sm min-w-[80px]">{item.month}</div>
+                    <div className="flex items-center gap-4">
+                      <div className="text-right min-w-[80px]">
+                        <div className="text-xs text-muted-foreground">收入</div>
+                        <div className="text-sm font-medium text-success flex items-center justify-end gap-1">
+                          <ArrowUpRight className="size-3" />
+                          ¥{item.income.toLocaleString()}
+                        </div>
+                      </div>
+                      <div className="text-right min-w-[80px]">
+                        <div className="text-xs text-muted-foreground">支出</div>
+                        <div className="text-sm font-medium text-destructive flex items-center justify-end gap-1">
+                          <ArrowDownRight className="size-3" />
+                          ¥{item.expense.toLocaleString()}
+                        </div>
+                      </div>
+                      <div className="text-right min-w-[80px]">
+                        <div className="text-xs text-muted-foreground">净流入</div>
+                        <div className={`text-sm font-semibold ${item.netFlow >= 0 ? 'text-success' : 'text-destructive'}`}>
+                          {item.netFlow >= 0 ? '+' : ''}¥{item.netFlow.toLocaleString()}
+                        </div>
+                      </div>
+                      <div className="text-right min-w-[80px]">
+                        <div className="text-xs text-muted-foreground">累计余额</div>
+                        <div className="text-sm font-bold tabular-nums">¥{item.balance.toLocaleString()}</div>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>收入预算来源</CardTitle>
+            <CardDescription>以下收入预算参与了月度预测</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {monthlyProjections.length === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-8">暂无收入预算数据，请到预算页添加</p>
+            ) : (
+              <div className="space-y-2">
+                {monthlyProjections.slice(0, 10).map((p, idx) => (
+                  <div key={idx} className="flex items-center justify-between py-2 border-b border-border last:border-0">
+                    <div>
+                      <div className="font-medium text-sm">{p.name}</div>
+                      <div className="text-xs text-muted-foreground">{p.projectionDate}</div>
+                    </div>
+                    <Badge variant="secondary" className="text-success bg-success/10">
+                      +¥{p.amount.toLocaleString()}
+                    </Badge>
+                  </div>
+                ))}
+                {monthlyProjections.length > 10 && (
+                  <div className="text-center text-sm text-muted-foreground pt-2">
+                    还有 {monthlyProjections.length - 10} 条收入记录...
+                  </div>
+                )}
+              </div>
+            )}
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Target className="size-5 text-primary" />
+                储蓄目标追踪
+              </CardTitle>
+              <CardDescription>设定储蓄目标，根据预测曲线追踪缺口</CardDescription>
+            </div>
+            {savingsGoal && (
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => setGoalFormOpen(true)}>
+                  <Edit2 className="size-3.5" />
+                  调整
+                </Button>
+                <Button variant="outline" size="sm" className="text-destructive hover:text-destructive" onClick={handleDeleteGoal}>
+                  <Trash2 className="size-3.5" />
+                  清除
+                </Button>
+              </div>
+            )}
+          </CardHeader>
+          <CardContent>
+            {!savingsGoal && !goalFormOpen ? (
+              <div className="flex flex-col items-center justify-center py-8 text-center">
+                <Target className="size-10 text-muted-foreground/30 mb-3" />
+                <p className="text-sm text-muted-foreground mb-4">还没有设定储蓄目标</p>
+                <Button variant="outline" onClick={() => setGoalFormOpen(true)}>
+                  <Plus className="size-4" />
+                  设定目标
+                </Button>
+              </div>
+            ) : goalFormOpen ? (
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="goal-amount">目标金额 (¥)</Label>
+                    <Input
+                      id="goal-amount"
+                      type="number"
+                      min="0"
+                      step="100"
+                      value={goalForm.targetAmount}
+                      onChange={(e) => setGoalForm(prev => ({ ...prev, targetAmount: e.target.value }))}
+                      placeholder={savingsGoal ? String(savingsGoal.targetAmount) : '如：100000'}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="goal-deadline">截止日期</Label>
+                    <Input
+                      id="goal-deadline"
+                      type="date"
+                      value={goalForm.deadline}
+                      onChange={(e) => setGoalForm(prev => ({ ...prev, deadline: e.target.value }))}
+                    />
+                  </div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <Button onClick={handleSaveGoal}>
+                    {savingsGoal ? '更新目标' : '保存目标'}
+                  </Button>
+                  {savingsGoal && (
+                    <Button variant="outline" onClick={resetGoalForm}>取消</Button>
+                  )}
+                </div>
+              </div>
+            ) : savingsGoal && goalAnalysis ? (
+              <div className="space-y-4">
+                {/* 进度条 */}
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm text-muted-foreground">储蓄进度</span>
+                    <span className="text-sm font-semibold tabular-nums">{goalAnalysis.progress}%</span>
+                  </div>
+                  <div className="h-3 bg-secondary rounded-full overflow-hidden">
+                    <div
+                      className="h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${goalAnalysis.progress}%`,
+                        background: goalAnalysis.progress >= 100
+                          ? 'linear-gradient(90deg, #2BA7A0, #47C9A0)'
+                          : 'linear-gradient(90deg, #3B82F6, #6366F1)',
+                      }}
+                    />
+                  </div>
+                </div>
+
+                {/* 核心数据卡片 */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="rounded-lg border p-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Target className="size-4 text-primary" />
+                      <span className="text-xs text-muted-foreground">目标金额</span>
+                    </div>
+                    <p className="text-lg font-bold tabular-nums">
+                      ¥{savingsGoal.targetAmount.toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <TrendingUp className="size-4 text-success" />
+                      <span className="text-xs text-muted-foreground">预测期末余额</span>
+                    </div>
+                    <p className="text-lg font-bold text-success tabular-nums">
+                      ¥{Math.round(goalAnalysis.endBalance).toLocaleString()}
+                    </p>
+                  </div>
+                  <div className="rounded-lg border p-3">
+                    <div className="flex items-center gap-2 mb-1">
+                      <Calendar className="size-4 text-muted-foreground" />
+                      <span className="text-xs text-muted-foreground">截止日期</span>
+                    </div>
+                    <p className="text-lg font-bold tabular-nums">{savingsGoal.deadline}</p>
+                  </div>
+                  <div className={`rounded-lg border p-3 ${goalAnalysis.gap > 0 ? 'border-destructive/30' : 'border-success/30'}`}>
+                    <div className="flex items-center gap-2 mb-1">
+                      {goalAnalysis.gap > 0 ? (
+                        <TrendingDown className="size-4 text-destructive" />
+                      ) : (
+                        <TrendingUp className="size-4 text-success" />
+                      )}
+                      <span className="text-xs text-muted-foreground">缺口</span>
+                    </div>
+                    <p className={`text-lg font-bold tabular-nums ${goalAnalysis.gap > 0 ? 'text-destructive' : 'text-success'}`}>
+                      {goalAnalysis.gap > 0
+                        ? `差 ¥${Math.round(goalAnalysis.gap).toLocaleString()}`
+                        : '可达成'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* 每月需多存（仅缺口>0时显示） */}
+                {goalAnalysis.gap > 0 && (
+                  <div className="rounded-lg bg-secondary/30 p-4">
+                    <div className="flex items-center gap-2 mb-2">
+                      <DollarSign className="size-4 text-primary" />
+                      <span className="font-medium text-sm">达成建议</span>
+                    </div>
+                    <p className="text-sm text-muted-foreground">
+                      距离 <strong>{savingsGoal.deadline}</strong> 还有约 <strong>{goalAnalysis.monthsRemaining} 个月</strong>，
+                      每个月需额外储蓄 <strong className="text-primary">¥{goalAnalysis.monthlyExtra.toLocaleString()}</strong> 才能达成目标。
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-2">
+                      当前每月净流入参考下方「月度收支预测」的净流入列。
+                    </p>
+                  </div>
+                )}
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 

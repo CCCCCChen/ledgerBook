@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
+import ReactECharts from 'echarts-for-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
-import { CreditCard, TrendingDown } from 'lucide-react';
+import { CreditCard, TrendingDown, PieChart } from 'lucide-react';
 import type { IAccount, ITransaction } from '@/types/finance';
 import { loadAccounts, loadTransactions } from '@/lib/data-service';
 import { formatLocalISOYearMonth, formatLocalISODate } from '@/lib/date';
@@ -94,6 +95,49 @@ export default function CreditDebtPage() {
     return stats;
   }, [creditAccounts, transactions, today]);
 
+  const annualInterestData = useMemo(() => {
+    const twelveMonthsAgo = new Date(today);
+    twelveMonthsAgo.setFullYear(twelveMonthsAgo.getFullYear() - 1);
+    const cutoffISO = formatLocalISODate(twelveMonthsAgo);
+
+    const byAccount: Record<string, { name: string; interest: number }> = {};
+    creditAccounts.forEach(acc => {
+      const accountTxns = transactions.filter(t => t.accountId === acc.id);
+      const installments = accountTxns.filter(
+        t => t.transactionType === 'installment_bill' && t.date >= cutoffISO
+      );
+      const annualInterest = installments.reduce((sum, t) => sum + (t.installmentFee || 0), 0);
+      byAccount[acc.id] = { name: acc.name, interest: annualInterest };
+    });
+
+    const totalAnnualInterest = Object.values(byAccount).reduce((s, a) => s + a.interest, 0);
+
+    const annualTxns = transactions.filter(t => t.date >= cutoffISO);
+    const annualIncome = annualTxns.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
+    const avgMonthlyIncome = annualIncome > 0 ? Math.round(annualIncome / 12) : 0;
+    const dailyIncome = avgMonthlyIncome > 0 ? Math.round(avgMonthlyIncome / 30) : 0;
+    const daysEquivalent = dailyIncome > 0 ? Math.round(totalAnnualInterest / dailyIncome) : 0;
+
+    return { byAccount, totalAnnualInterest, daysEquivalent };
+  }, [creditAccounts, transactions, today]);
+
+  const annualInterestPieOption = useMemo(() => {
+    const accounts = Object.values(annualInterestData.byAccount).filter(a => a.interest > 0);
+    if (accounts.length === 0) return null;
+    return {
+      tooltip: { trigger: 'item', formatter: '{b}: ¥{c}' },
+      series: [{
+        type: 'pie',
+        radius: ['40%', '70%'],
+        data: accounts.map(a => ({ name: a.name, value: a.interest })),
+        label: { formatter: '{b}\n¥{c}' },
+        emphasis: {
+          label: { fontSize: 16, fontWeight: 'bold' },
+        },
+      }],
+    };
+  }, [annualInterestData]);
+
   const summary = useMemo(() => {
     let totalDebt = 0;
     let monthlyRepayment = 0;
@@ -143,6 +187,36 @@ export default function CreditDebtPage() {
           <h1 className="text-2xl font-bold text-foreground">信贷与负债</h1>
           <p className="text-sm text-muted-foreground mt-1">统一查看花呗、信用卡、分期月供、利息成本与提前还款影响</p>
         </div>
+
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2">
+              <PieChart className="size-5 text-primary" />
+              年度利息成本
+            </CardTitle>
+            <CardDescription>过去 12 个月各信用账户的分期利息汇总</CardDescription>
+          </CardHeader>
+          <CardContent>
+            {annualInterestData.totalAnnualInterest === 0 ? (
+              <p className="text-sm text-muted-foreground text-center py-6">过去一年无分期利息支出，继续保持</p>
+            ) : (
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                <div className="flex flex-col justify-center items-center md:items-start space-y-2">
+                  <p className="text-sm text-muted-foreground">年度总利息</p>
+                  <p className="text-4xl font-bold tabular-nums text-destructive">¥{annualInterestData.totalAnnualInterest.toLocaleString()}</p>
+                  <p className="text-sm text-muted-foreground">
+                    过去一年你为负债支付了 {annualInterestData.daysEquivalent > 0 ? `相当于 ${annualInterestData.daysEquivalent} 天的收入` : '利息成本'}
+                  </p>
+                </div>
+                <div className="md:col-span-2">
+                  {annualInterestPieOption ? (
+                    <ReactECharts option={annualInterestPieOption} style={{ height: 220 }} />
+                  ) : null}
+                </div>
+              </div>
+            )}
+          </CardContent>
+        </Card>
 
         <div className="grid grid-cols-2 xl:grid-cols-4 gap-4">
           <Card>

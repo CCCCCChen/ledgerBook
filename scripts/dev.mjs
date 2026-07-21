@@ -89,8 +89,8 @@ killOrphansByPort(CLIENT_DEV_PORT);
 
 startProcess({
   name: 'client',
-  command: 'npx',
-  args: ['vite', '--port', CLIENT_DEV_PORT, '--host', '0.0.0.0'],
+  command: process.execPath,
+  args: [path.join(ROOT, 'node_modules', 'vite', 'bin', 'vite.js'), '--port', CLIENT_DEV_PORT, '--host', '0.0.0.0'],
   logFileName: 'client.std.log',
 });
 

@@ -2,7 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { BrowserRouter, HashRouter } from 'react-router-dom';
 import { ErrorBoundary } from 'react-error-boundary';
-import App from './app';
+import App from './App';
 import './index.css';
 import { isElectronRuntime } from '@/lib/electron-api';
 

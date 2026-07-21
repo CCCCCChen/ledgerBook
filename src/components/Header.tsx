@@ -1,14 +1,13 @@
 import { useState } from 'react';
 import { NavLink, useLocation } from 'react-router-dom';
-import { Menu, Receipt, PiggyBank, BarChart3, Wallet, CalendarClock, CreditCard, TrendingUp } from 'lucide-react';
+import { Menu, Receipt, PiggyBank, BarChart3, Wallet, CalendarClock, CreditCard } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 
 const NAV_ITEMS = [
   { path: '/', label: '账单', icon: Receipt },
   { path: '/budgets', label: '预算', icon: PiggyBank },
-  { path: '/statistics', label: '统计模拟', icon: BarChart3 },
-  { path: '/cash-flow', label: '现金流分析', icon: TrendingUp },
+  { path: '/dashboard', label: '仪表盘', icon: BarChart3 },
   { path: '/forecast', label: '预期账单', icon: CalendarClock },
   { path: '/credit-debt', label: '信贷', icon: CreditCard },
   { path: '/accounts', label: '账户', icon: Wallet },
