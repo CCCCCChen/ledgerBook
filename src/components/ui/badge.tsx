@@ -19,6 +19,9 @@ const badgeVariants = cva(
         destructive:
           // Error/danger state with matching shadow
           "border-transparent bg-destructive text-destructive-foreground shadow-xs",
+        warning:
+          // Warning/attention state using existing warning tokens
+          "border-transparent bg-warning text-warning-foreground shadow-xs",
         // Outline uses badge-outline variable to blend with parent background
         outline: "border [border-color:var(--badge-outline)] shadow-xs",
       },

@@ -22,10 +22,14 @@ export default function AlertPanel({ alerts }: { alerts: AlertItem[] }) {
       <CardContent className="space-y-3">
         {alerts.length > 0 ? (
           alerts.map((alert, i) => (
-            <Alert key={i} variant={alert.severity === 'high' ? 'destructive' : 'default'}>
+            <Alert key={i} variant="default" className={
+              alert.severity === 'high' ? 'border-l-4 border-l-destructive' :
+              alert.severity === 'medium' ? 'border-l-4 border-l-warning' :
+              'border-l-4 border-l-muted-foreground/25'
+            }>
               <AlertTitle className="flex items-center gap-2">
                 {alert.title}
-                <Badge variant={alert.severity === 'high' ? 'destructive' : 'secondary'}>
+                <Badge variant="secondary">
                   {alert.severity === 'high' ? '高风险' : alert.severity === 'medium' ? '关注' : '提示'}
                 </Badge>
               </AlertTitle>

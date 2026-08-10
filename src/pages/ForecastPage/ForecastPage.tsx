@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Pencil, Trash2, TrendingUp, TrendingDown, DollarSign, ArrowUpRight, ArrowDownRight, Target, Calendar, Edit2 } from 'lucide-react';
+import { Plus, Pencil, Trash2, TrendingUp, TrendingDown, DollarSign, ArrowUpRight, ArrowDownRight, Target, Calendar, Edit2, ArrowDown } from 'lucide-react';
 import { toast } from 'sonner';
 import ReactECharts from 'echarts-for-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -332,7 +332,16 @@ export default function ForecastPage() {
     if (balanceSeries.dates.length === 0) return null;
     const safety = Number(safetyLine || 0);
     return {
-      tooltip: { trigger: 'axis' },
+      tooltip: {
+        trigger: 'axis',
+        formatter(params: { name: string; value: number; seriesName: string }[]) {
+          if (!params || params.length === 0) return '';
+          const p = params[0];
+          const diff = p.value - safety;
+          const diffStr = diff >= 0 ? `高于安全线 ${diff.toFixed(2)}` : `⚠ 跌破安全线 ${Math.abs(diff).toFixed(2)}`;
+          return `${p.name}<br/>${p.seriesName}：${p.value.toFixed(2)}<br/>${diffStr}`;
+        },
+      },
       grid: { left: '3%', right: '4%', bottom: '10%', containLabel: true },
       xAxis: { type: 'category', data: balanceSeries.dates, axisLabel: { rotate: 30, fontSize: 11 } },
       yAxis: { type: 'value', name: '余额 (元)' },
@@ -365,7 +374,16 @@ export default function ForecastPage() {
           markLine: {
             symbol: 'none',
             lineStyle: { color: '#E5484D', type: 'dashed' },
+            label: { formatter: '安全线 {c}', position: 'end' },
             data: [{ yAxis: safety }],
+          },
+          markArea: {
+            silent: true,
+            itemStyle: { color: 'rgba(229,72,77,0.12)' },
+            data: [[
+              { yAxis: 0, itemStyle: { color: 'rgba(229,72,77,0.06)' } },
+              { yAxis: safety },
+            ]],
           },
           markPoint: {
             data: [
@@ -476,7 +494,7 @@ export default function ForecastPage() {
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
     if (!form.name.trim()) {
-      toast.error('请输入预估支出名称');
+      toast.error('请输入财务事件名称');
       return;
     }
     if (!form.amount || Number(form.amount) <= 0) {
@@ -498,11 +516,11 @@ export default function ForecastPage() {
       : await createPlannedExpense(payload);
 
     if (!result) {
-      toast.error(editingId ? '预估支出更新失败' : '预估支出创建失败');
+      toast.error(editingId ? '财务事件更新失败' : '财务事件创建失败');
       return;
     }
 
-    toast.success(editingId ? '预估支出已更新' : '预估支出已创建');
+    toast.success(editingId ? '财务事件已更新' : '财务事件已创建');
     setDialogOpen(false);
     resetForm();
     await refreshAll();
@@ -512,10 +530,10 @@ export default function ForecastPage() {
     if (!deleteTarget) return;
     const ok = await deletePlannedExpense(deleteTarget.id);
     if (!ok) {
-      toast.error('预估支出删除失败');
+      toast.error('财务事件删除失败');
       return;
     }
-    toast.success('预估支出已删除');
+    toast.success('财务事件已删除');
     setDeleteTarget(null);
     await refreshAll();
   };
@@ -688,7 +706,7 @@ export default function ForecastPage() {
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">预期账单</h1>
+          <h1 className="text-2xl font-bold text-foreground">现金流预测</h1>
           <p className="text-sm text-muted-foreground mt-1">
             查看未来支出、分期账单以及预算结算对结余的影响
           </p>
@@ -698,28 +716,37 @@ export default function ForecastPage() {
         </Button>
       </div>
 
-        {/* Strategy Selector */}
+      {/* Summary Strip */}
+      {balanceSeries.dates.length > 0 && (
         <Card>
           <CardContent className="p-4">
-            <div className="flex flex-wrap items-center gap-2">
-              {[
-                { id: 'conservative', label: '保守' },
-                { id: 'balanced', label: '均衡' },
-                { id: 'aggressive', label: '激进' },
-              ].map((s) => (
-                <Badge
-                  key={s.id}
-                  className={`cursor-pointer ${s.id === 'balanced' ? 'bg-primary text-primary-foreground' : ''}`}
-                  variant="outline"
-                >
-                  {s.label}
-                </Badge>
-              ))}
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
+              <div>
+                <p className="text-xs text-muted-foreground">起始余额</p>
+                <p className="text-lg font-bold tabular-nums">¥{Number(startBalance || 0).toLocaleString()}</p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">最高余额</p>
+                <p className="text-lg font-bold tabular-nums text-green-600">
+                  ¥{Math.round(Math.max(...balanceSeries.balances)).toLocaleString()}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">最低余额</p>
+                <p className="text-lg font-bold tabular-nums text-red-600">
+                  ¥{Math.round(balanceSeries.minBalance).toLocaleString()}
+                </p>
+              </div>
+              <div>
+                <p className="text-xs text-muted-foreground">期末余额</p>
+                <p className="text-lg font-bold tabular-nums">¥{Math.round(balanceSeries.endBalance).toLocaleString()}</p>
+              </div>
             </div>
           </CardContent>
         </Card>
+      )}
 
-        {/* Simulation Panel */}
+      {/* Simulation Panel */}
         <Card>
           <CardHeader><CardTitle className="text-base">模拟参数</CardTitle></CardHeader>
           <CardContent className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -733,7 +760,7 @@ export default function ForecastPage() {
             </div>
             <div className="flex items-center gap-2">
               <Switch id="pe" checked={includePlannedExpenses} onCheckedChange={setIncludePlannedExpenses} />
-              <Label htmlFor="pe">含预估支出</Label>
+              <Label htmlFor="pe">含财务事件</Label>
             </div>
             <div className="flex items-center gap-2">
               <Switch id="bs" checked={includeBudgetSettlement} onCheckedChange={setIncludeBudgetSettlement} />
@@ -748,20 +775,46 @@ export default function ForecastPage() {
           <CardContent>
             {hasSimulationData && chartPoints.length > 0 ? (
               <ReactECharts
-                option={{
-                  xAxis: { type: 'category', data: chartPoints.map((p: any) => p.date) },
-                  yAxis: { type: 'value' },
-                  series: [
-                    {
-                      type: 'line',
-                      data: chartPoints.map((p: any) => p.balance),
-                      smooth: true,
-                      markLine: Number(safetyLine || 0) > 0 ? {
-                        data: [{ yAxis: Number(safetyLine), name: '安全线' }],
-                      } : undefined,
-                    },
-                  ],
-                }}
+                option={(() => {
+                  const sVal = Number(safetyLine || 0);
+                  return {
+                    tooltip: sVal > 0 ? {
+                      trigger: 'axis',
+                      formatter(params: { name: string; value: number }[]) {
+                        if (!params || params.length === 0) return '';
+                        const p = params[0];
+                        const diff = p.value - sVal;
+                        const diffStr = diff >= 0
+                          ? `高于安全线 ${diff.toFixed(2)}`
+                          : `⚠ 跌破安全线 ${Math.abs(diff).toFixed(2)}`;
+                        return `${p.name}<br/>余额：${p.value.toFixed(2)}<br/>${diffStr}`;
+                      },
+                    } : {},
+                    xAxis: { type: 'category', data: chartPoints.map((p: any) => p.date) },
+                    yAxis: { type: 'value' },
+                    series: [
+                      {
+                        type: 'line',
+                        data: chartPoints.map((p: any) => p.balance),
+                        smooth: true,
+                        markLine: sVal > 0 ? {
+                          symbol: 'none',
+                          lineStyle: { color: '#E5484D', type: 'dashed' },
+                          label: { formatter: '安全线 {c}', position: 'end' },
+                          data: [{ yAxis: sVal }],
+                        } : undefined,
+                        markArea: sVal > 0 ? {
+                          silent: true,
+                          itemStyle: { color: 'rgba(229,72,77,0.12)' },
+                          data: [[
+                            { yAxis: 0, itemStyle: { color: 'rgba(229,72,77,0.06)' } },
+                            { yAxis: sVal },
+                          ]],
+                        } : undefined,
+                      },
+                    ],
+                  };
+                })()}
                 style={{ height: 320 }}
               />
             ) : (
@@ -781,7 +834,21 @@ export default function ForecastPage() {
             <div className="flex flex-wrap items-end gap-3">
               <div className="grid gap-1.5">
                 <Label htmlFor="sim-from">模拟起始日</Label>
-                <Input id="sim-from" type="date" value={simulateFrom} onChange={(e) => setSimulateFrom(e.target.value)} />
+                <div className="flex gap-1.5">
+                  <Input id="sim-from" type="date" value={simulateFrom} onChange={(e) => setSimulateFrom(e.target.value)} />
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="shrink-0"
+                    onClick={() => {
+                      const today = new Date();
+                      const to = new Date(today);
+                      to.setMonth(to.getMonth() + 12);
+                      setSimulateFrom(today.toISOString().slice(0, 10));
+                      setRangeTo(to.toISOString().slice(0, 10));
+                    }}
+                  >12个月</Button>
+                </div>
               </div>
               <div className="grid gap-1.5">
                 <Label htmlFor="sim-balance">起始余额</Label>
@@ -792,7 +859,7 @@ export default function ForecastPage() {
                 <Input id="sim-safety" type="number" step="0.01" value={safetyLine} onChange={(e) => setSafetyLine(e.target.value)} />
               </div>
               <div className="flex items-center gap-2 pb-1">
-                <Label htmlFor="forecast-planned">考虑预估支出</Label>
+                <Label htmlFor="forecast-planned">考虑财务事件</Label>
                 <Switch id="forecast-planned" checked={includePlannedExpenses} onCheckedChange={setIncludePlannedExpenses} />
               </div>
               <div className="flex items-center gap-2 pb-1">
@@ -881,17 +948,22 @@ export default function ForecastPage() {
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
-              <CardTitle>预估支出</CardTitle>
-              <CardDescription>手动添加的预估支出项目</CardDescription>
+              <CardTitle>财务事件</CardTitle>
+              <CardDescription>手动添加的财务事件项目</CardDescription>
             </div>
             <Button size="sm" onClick={() => openPlannedDialog()}><Plus className="size-3.5 mr-1.5" />添加</Button>
           </CardHeader>
           <CardContent>
             {futurePlannedExpenses.length === 0 ? (
-              <p className="text-sm text-muted-foreground py-8 text-center">暂无预估支出</p>
+              <p className="text-sm text-muted-foreground py-8 text-center">暂无财务事件</p>
             ) : (
               <div className="divide-y">
-                {futurePlannedExpenses.map((item) => (
+                {futurePlannedExpenses.map((item) => {
+                  const startBal = Number(startBalance || 0);
+                  const safety = Number(safetyLine || 0);
+                  const safetyMargin = startBal - safety;
+                  const breakAmount = item.amount - safetyMargin;
+                  return (
                   <div key={item.id} className="flex items-center justify-between py-3">
                     <div className="min-w-0">
                       <p className="text-sm font-medium truncate">{item.name}</p>
@@ -902,6 +974,15 @@ export default function ForecastPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-3 ml-3 shrink-0">
+                      {breakAmount > 0 && (
+                        <span
+                          className="inline-flex items-center gap-0.5 text-xs font-semibold text-red-500 whitespace-nowrap"
+                          title={`起始余额 ${startBal.toFixed(2)} − 安全线 ${safety.toFixed(2)} = 安全余量 ${safetyMargin.toFixed(2)}\n此财务事件金额 ${item.amount.toFixed(2)} > 安全余量 ${safetyMargin.toFixed(2)}\n超出 = ${breakAmount.toFixed(2)}（余额将跌破安全线）`}
+                        >
+                          <ArrowDown className="size-3" />
+                          ¥{Math.round(breakAmount).toLocaleString()}
+                        </span>
+                      )}
                       <span className="text-sm font-semibold tabular-nums text-destructive">
                         -¥{Math.abs(item.amount).toLocaleString()}
                       </span>
@@ -913,7 +994,8 @@ export default function ForecastPage() {
                       </Button>
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </CardContent>
@@ -924,7 +1006,7 @@ export default function ForecastPage() {
         <DialogContent>
           <form onSubmit={handlePlannedSubmit}>
             <DialogHeader>
-              <DialogTitle>{editingId ? '编辑预估支出' : '添加预估支出'}</DialogTitle>
+              <DialogTitle>{editingId ? '编辑财务事件' : '添加财务事件'}</DialogTitle>
               <DialogDescription>手动添加一笔未来可能发生的支出</DialogDescription>
             </DialogHeader>
             <div className="grid gap-4 py-4">

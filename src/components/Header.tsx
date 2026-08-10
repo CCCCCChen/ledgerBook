@@ -8,7 +8,7 @@ const NAV_ITEMS = [
   { path: '/', label: '账单', icon: Receipt },
   { path: '/budgets', label: '预算', icon: PiggyBank },
   { path: '/dashboard', label: '仪表盘', icon: BarChart3 },
-  { path: '/forecast', label: '预期账单', icon: CalendarClock },
+  { path: '/forecast', label: '现金流预测', icon: CalendarClock },
   { path: '/credit-debt', label: '信贷', icon: CreditCard },
   { path: '/accounts', label: '账户', icon: Wallet },
 ] as const;

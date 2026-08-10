@@ -197,36 +197,46 @@ export default function DashboardPage() {
     const monthStart = formatLocalISODate(new Date(refDate.getFullYear(), refDate.getMonth(), 1));
     const monthEnd = formatLocalISODate(new Date(refDate.getFullYear(), refDate.getMonth() + 1, 0));
 
-    const byCategory = new Map<string, { budgetAmount: number; actualAmount: number }>();
+    // 第一步：按分类汇总分母（月折算后）
+    const categoryBudget = new Map<string, { denominator: number; budgetIds: Set<string> }>();
     budgets.forEach((b: any) => {
       if (!b || Number(b.amount) <= 0) return;
-      const norm = normalizeBudgetToCurrentMonth(b, { refDate, prorateMonthlyByElapsedDays: true });
-      const deno = Math.max(0, norm.normalizedBudgetAmount);
-      const used = transactions
-        .filter((t) => {
-          if (t.amount >= 0) return false;
-          if (b.category && t.category !== b.category) return false;
-          // 只统计折算口径要求的分子窗口（monthStart..today 或自定义周期 overlap 窗口）
-          if (t.date < norm.usedRangeStart || t.date > norm.usedRangeEnd) return false;
-          if (t.budgetId) return t.budgetId === b.id; // 如果交易显式绑了 budgetId，优先按绑定
-          return true; // 否则按分类聚合
-        })
-        .reduce((s, t) => s + Math.abs(t.amount), 0);
+      const norm = normalizeBudgetToCurrentMonth(b, { refDate, prorateMonthlyByElapsedDays: false });
       const key = (b.category as string) || '其他';
-      const prev = byCategory.get(key) || { budgetAmount: 0, actualAmount: 0 };
-      prev.budgetAmount += deno;
-      prev.actualAmount += used;
-      byCategory.set(key, prev);
+      const prev = categoryBudget.get(key) || { denominator: 0, budgetIds: new Set() };
+      prev.denominator += Math.max(0, norm.normalizedBudgetAmount);
+      prev.budgetIds.add(String(b.id));
+      categoryBudget.set(key, prev);
+    });
+
+    // 第二步：按分类汇总分子（每笔交易只计一次）
+    const categoryUsed = new Map<string, number>();
+    transactions.forEach((t) => {
+      if (t.amount >= 0) return;
+      if (t.date < monthStart || t.date > monthEnd) return;
+
+      let catKey: string | null = null;
+      if (t.budgetId) {
+        // 有 budgetId 的交易：按所属预算的分类归入
+        const budget = budgets.find((b: any) => String(b.id) === String(t.budgetId));
+        if (budget) catKey = (budget.category as string) || '其他';
+      } else {
+        // 无 budgetId 的交易：按自身分类归入
+        catKey = (t.category as string) || '其他';
+      }
+      if (catKey) {
+        categoryUsed.set(catKey, (categoryUsed.get(catKey) || 0) + Math.abs(t.amount));
+      }
     });
 
     return DEFAULT_CATEGORIES.map((category) => {
-      const agg = byCategory.get(category);
-      if (!agg || agg.budgetAmount <= 0) return null;
-      const { budgetAmount, actualAmount } = agg;
+      const b = categoryBudget.get(category);
+      if (!b || b.denominator <= 0) return null;
+      const actualAmount = categoryUsed.get(category) || 0;
       const progress = Math.round(
-        budgetAmount > 0 ? Math.min(99999, (actualAmount / budgetAmount) * 100) : 0,
+        b.denominator > 0 ? Math.min(99999, (actualAmount / b.denominator) * 100) : 0,
       );
-      return { category, budgetAmount, actualAmount, progress };
+      return { category, budgetAmount: b.denominator, actualAmount, progress };
     }).filter(Boolean);
   }, [transactions, budgets]);
 
@@ -416,7 +426,8 @@ export default function DashboardPage() {
             result += `<br/><strong>该分类记录（${txns.length}笔）：</strong><br/>`;
             const sortedTxns = [...txns].sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
             sortedTxns.slice(0, 5).forEach(txn => {
-              result += `¥${Math.abs(txn.amount).toLocaleString()} - ${txn.date}<br/>`;
+              const label = txn.note.trim() || '（无备注）';
+              result += `${label} - ¥${Math.abs(txn.amount).toLocaleString()} (${txn.date})<br/>`;
             });
             if (txns.length > 5) {
               result += `...还有 ${txns.length - 5} 笔记录`;

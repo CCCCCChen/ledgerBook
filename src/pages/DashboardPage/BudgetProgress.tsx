@@ -22,17 +22,21 @@ export default function BudgetProgress({ budgetData }: { budgetData: BudgetItem[
         {budgetData.length > 0 ? (
           <div className="space-y-4">
             {budgetData.map((item) => {
-              const progressColor = item.progress >= 100 ? 'bg-destructive' : item.progress >= 80 ? 'bg-yellow-500' : 'bg-success';
+              const isOver = item.progress >= 100;
+              const isWarn = !isOver && item.progress >= 80;
+              const barColor = isOver ? 'bg-red-600' : isWarn ? 'bg-yellow-500' : 'bg-success';
+              const barWidth = Math.min(item.progress, 100);
               return (
                 <div key={item.category}>
                   <div className="flex justify-between text-sm mb-1">
-                    <span>{item.category}</span>
-                    <span className={item.progress >= 100 ? 'text-destructive font-medium' : 'text-muted-foreground'}>
+                    <span className={isOver ? 'text-red-600 font-semibold' : ''}>{item.category}</span>
+                    <span className={isOver ? 'text-red-600 font-semibold' : 'text-muted-foreground'}>
                       ¥{item.actualAmount.toFixed(0)} / ¥{item.budgetAmount.toFixed(0)}
+                      {isOver && ` (+${item.progress - 100}%)`}
                     </span>
                   </div>
-                  <div className="w-full bg-secondary rounded-full h-2">
-                    <div className={`h-2 rounded-full transition-all ${progressColor}`} style={{ width: `${item.progress}%` }} />
+                  <div className={`w-full rounded-full h-2 ${isOver ? 'bg-red-100' : 'bg-secondary'}`}>
+                    <div className={`h-2 rounded-full transition-all ${barColor} ${isOver ? 'animate-pulse' : ''}`} style={{ width: `${barWidth}%` }} />
                   </div>
                 </div>
               );
