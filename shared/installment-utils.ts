@@ -64,25 +64,29 @@ export function getBudgetCycleWindow(
     return { start: budget.startDate, end: budget.startDate };
   }
 
-  if (budget.cycleType === 'weekly' || (budget.cycleType === 'custom' && budget.cycleDays)) {
-    if (budget.cycleType === 'weekly') {
-      // 以参考日所属周的周一为准
-      const refDay = ref.getDay();
-      const mondayOffset = refDay === 0 ? -6 : 1 - refDay;
-      const currentMonday = addDays(ref, mondayOffset);
+  if (budget.cycleType === 'custom' && !budget.cycleDays) {
+    return null; // custom 缺 cycleDays → 无法确定周期窗口
+  }
 
-      const anchorDay = anchor.getDay();
-      const anchorMondayOffset = anchorDay === 0 ? -6 : 1 - anchorDay;
-      const anchorMonday = addDays(anchor, anchorMondayOffset);
+  if (budget.cycleType === 'weekly') {
+    // 以参考日所属周的周一为准
+    const refDay = ref.getDay();
+    const mondayOffset = refDay === 0 ? -6 : 1 - refDay;
+    const currentMonday = addDays(ref, mondayOffset);
 
-      const diffDays = Math.floor((currentMonday.getTime() - anchorMonday.getTime()) / 86400000);
-      const cycleIndex = Math.floor(diffDays / 7);
+    const anchorDay = anchor.getDay();
+    const anchorMondayOffset = anchorDay === 0 ? -6 : 1 - anchorDay;
+    const anchorMonday = addDays(anchor, anchorMondayOffset);
 
-      const start = addDays(anchorMonday, cycleIndex * 7);
-      const end = addDays(start, 6);
-      return { start: formatISODate(start), end: formatISODate(end) };
-    }
+    const diffDays = Math.floor((currentMonday.getTime() - anchorMonday.getTime()) / 86400000);
+    const cycleIndex = Math.floor(diffDays / 7);
 
+    const start = addDays(anchorMonday, cycleIndex * 7);
+    const end = addDays(start, 6);
+    return { start: formatISODate(start), end: formatISODate(end) };
+  }
+
+  if (budget.cycleType === 'custom') {
     const cycleDays = budget.cycleDays as number;
     const diffDays = Math.floor((ref.getTime() - anchor.getTime()) / 86400000);
     const cycleIndex = Math.floor(diffDays / cycleDays);
@@ -177,7 +181,7 @@ export interface BudgetShapeForNormalize {
 export function normalizeBudgetToCurrentMonth(
   budget: BudgetShapeForNormalize,
   opts: { refDate?: Date; prorateMonthlyByElapsedDays?: boolean } = {},
-): MonthlyNormalizedBudgetResult {
+): MonthlyNormalizedBudgetResult | null {
   const ref = parseISODate(formatISODate(opts.refDate ?? new Date()));
   const refISO = formatISODate(ref);
   const { monthStart, monthEnd, daysInMonth } = getMonthBounds(ref);
@@ -235,6 +239,8 @@ export function normalizeBudgetToCurrentMonth(
     const w = getBudgetCycleWindow(budget, ref);
     if (w) { cycleStart = w.start; cycleEnd = w.end; }
     totalDays = Math.max(1, Number(budget.cycleDays) || 0);
+  } else if (budget.cycleType === 'custom') {
+    return null; // custom 缺 cycleDays → 无法折算
   } else if (budget.cycleType === 'once') {
     cycleStart = budget.startDate;
     cycleEnd = budget.endDate || budget.startDate;
@@ -268,22 +274,15 @@ export function normalizeBudgetToCurrentMonth(
 export function calculateBudgetStats(
   budget: BudgetShapeForNormalize,
   refDate: Date = new Date(),
-): BudgetStatsResult {
+): BudgetStatsResult | null {
   const amount = Math.max(0, Number(budget.amount) || 0);
   const window = getBudgetCycleWindow(budget, refDate);
 
-  if (window) {
-    return {
-      currentPeriodStart: window.start,
-      currentPeriodEnd: window.end,
-      denominator: amount,
-    };
-  }
+  if (!window) return null;
 
-  // 兜底：窗口计算失败时（如 once 已超出范围），使用起止日期回退
   return {
-    currentPeriodStart: budget.startDate,
-    currentPeriodEnd: budget.endDate || budget.startDate,
+    currentPeriodStart: window.start,
+    currentPeriodEnd: window.end,
     denominator: amount,
   };
 }

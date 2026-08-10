@@ -94,6 +94,7 @@ router.get('/budget-execution', (req, res) => {
     const results = budgets.map((row) => {
       const budget = mapBudgetRow(row);
       const norm = normalizeBudgetToCurrentMonth(budget, { refDate, prorateMonthlyByElapsedDays: false });
+      if (!norm) return null; // custom 缺 cycleDays 跳过
       const denominator = Math.max(0, norm.normalizedBudgetAmount);
 
       const params = [budget.id];
@@ -119,7 +120,7 @@ router.get('/budget-execution', (req, res) => {
         isOverBudget: rate > 100,
         isWarning: rate >= 80 && rate <= 100,
       };
-    });
+    }).filter(Boolean);
 
     res.json(results);
   } catch (error) {
@@ -217,6 +218,7 @@ router.get('/over-budget-alerts', (req, res) => {
         const budget = mapBudgetRow(row);
         const refDate = new Date();
         const norm = normalizeBudgetToCurrentMonth(budget, { refDate, prorateMonthlyByElapsedDays: true });
+        if (!norm) return null; // custom 缺 cycleDays 跳过
         const denominator = Math.max(0, norm.normalizedBudgetAmount);
         const params = [budget.id];
         let sql = "SELECT COALESCE(SUM(ABS(amount)), 0) as used FROM transactions WHERE budget_id = ? AND amount < 0";
@@ -237,6 +239,7 @@ router.get('/over-budget-alerts', (req, res) => {
           severity: rate > 100 ? 'over' : rate >= 80 ? 'warning' : 'normal',
         };
       })
+      .filter(Boolean)
       .filter((b) => b.rate >= 80)
       .sort((a, b) => b.rate - a.rate);
 

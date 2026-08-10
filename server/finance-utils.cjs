@@ -30,6 +30,22 @@ function mapBudgetRow(row) {
 function createBudgetStats(db, row, refDate = new Date(), customWindow = null) {
   const budget = mapBudgetRow(row);
   const stats = calculateBudgetStats(budget, refDate);
+
+  // custom 缺 cycleDays → 无法计算，返回空壳
+  if (!stats) {
+    return {
+      ...budget,
+      currentPeriodStart: budget.startDate,
+      currentPeriodEnd: budget.endDate || budget.startDate,
+      spendingStart: undefined,
+      spendingEnd: undefined,
+      denominator: budget.amount,
+      used: 0,
+      rate: 0,
+      remaining: budget.amount,
+    };
+  }
+
   const denominator = stats.denominator;
 
   const spendingStart = customWindow ? customWindow.start : stats.currentPeriodStart;
