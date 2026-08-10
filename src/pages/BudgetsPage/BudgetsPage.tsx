@@ -1,5 +1,5 @@
 import { useState, useMemo, useCallback, useEffect, type FormEvent } from 'react';
-import { Plus, Download, Upload, TrendingUp, Wallet, PiggyBank, Edit, Trash2 } from 'lucide-react';
+import { Plus, Download, Upload, TrendingUp, Wallet, PiggyBank, Edit, Trash2, ChevronLeft, ChevronRight } from 'lucide-react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
@@ -17,7 +17,7 @@ import {
   loadAccounts, loadIncomeBudgets, createIncomeBudget, updateIncomeBudget, deleteIncomeBudget,
 } from '@/lib/data-service';
 import { getElectronAPI, isElectronRuntime } from '@/lib/electron-api';
-import type { BudgetWithStats } from '@/api';
+import type { BudgetWithStats, BudgetListParams } from '@/api';
 import { nowLocalISODate } from '@/lib/date';
 
 import { BudgetForm } from './BudgetForm';
@@ -118,6 +118,32 @@ export default function BudgetsPage() {
 
   const [importInput, setImportInput] = useState<string>('');
 
+  // 周区间滑动：weekOffset = 0 表示本周，负数向前、正数向后
+  const [weekOffset, setWeekOffset] = useState(0);
+
+  // 当前显示周的窗口（周一 ~ 周日）
+  const weekWindow = useMemo(() => {
+    const today = new Date();
+    const day = today.getDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    const monday = new Date(today);
+    monday.setDate(today.getDate() + mondayOffset + weekOffset * 7);
+    monday.setHours(0, 0, 0, 0);
+    const sunday = new Date(monday);
+    sunday.setDate(monday.getDate() + 6);
+
+    const ymd = (d: Date) =>
+      `${d.getFullYear()}/${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')}`;
+    const ymdISO = (d: Date) =>
+      `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+
+    return {
+      label: `${ymd(monday)} ~ ${ymd(sunday)}`,
+      start: ymdISO(monday),
+      end: ymdISO(sunday),
+    };
+  }, [weekOffset]);
+
   // Helpers
   const getAccountName = (accountId?: string) => {
     if (!accountId) return '未指定账户';
@@ -131,9 +157,17 @@ export default function BudgetsPage() {
 
   // Load data
   const refreshBudgets = useCallback(async () => {
-    const bdgs = await loadBudgets();
+    let params: BudgetListParams | undefined;
+    if (weekOffset !== 0) {
+      params = {
+        refDate: weekWindow.start,
+        spendingStart: weekWindow.start,
+        spendingEnd: weekWindow.end,
+      };
+    }
+    const bdgs = await loadBudgets(params);
     setBudgets(bdgs);
-  }, []);
+  }, [weekOffset, weekWindow]);
 
   const refreshIncomeBudgets = useCallback(async () => {
     try {
@@ -156,31 +190,42 @@ export default function BudgetsPage() {
   }, [refreshBudgets, refreshIncomeBudgets, refreshAccounts]);
 
   // Derived
-  const overBudgetItems = useMemo(() => budgets.filter((b) => b.rate > 100), [budgets]);
-  const warningItems = useMemo(() => budgets.filter((b) => b.rate >= 80 && b.rate <= 100), [budgets]);
+  const displayBudgets = useMemo(() => {
+    // 非本周时，过滤掉与当前周窗口无交集的 once 预算
+    if (weekOffset === 0) return budgets;
+    return budgets.filter((b) => {
+      if (b.cycleType !== 'once') return true;
+      const onceStart = b.startDate;
+      const onceEnd = b.endDate || b.startDate;
+      return onceStart <= weekWindow.end && onceEnd >= weekWindow.start;
+    });
+  }, [budgets, weekOffset, weekWindow]);
+
+  const overBudgetItems = useMemo(() => displayBudgets.filter((b) => b.rate > 100), [displayBudgets]);
+  const warningItems = useMemo(() => displayBudgets.filter((b) => b.rate >= 80 && b.rate <= 100), [displayBudgets]);
 
   // 分组筛选：支持 全部 / 周期 / 分类 三种维度
   const [viewMode, setViewMode] = useState<'flat' | 'byCycle' | 'byCategory'>('flat');
-  const cycleOrder: string[] = ['monthly', 'weekly', 'yearly', 'custom', 'once'];
+  const cycleOrder: string[] = ['weekly', 'monthly', 'yearly', 'custom', 'once'];
   const cycleGroups = useMemo(() => {
     const g = new Map<string, BudgetWithStats[]>();
-    budgets.forEach((b) => {
+    displayBudgets.forEach((b) => {
       const key = b.cycleType || 'custom';
       if (!g.has(key)) g.set(key, []);
       g.get(key)!.push(b);
     });
     return Array.from(g.entries())
       .sort(([a], [b]) => (cycleOrder.indexOf(a) === -1 ? 99 : cycleOrder.indexOf(a)) - (cycleOrder.indexOf(b) === -1 ? 99 : cycleOrder.indexOf(b)));
-  }, [budgets]);
+  }, [displayBudgets]);
   const categoryGroups = useMemo(() => {
     const g = new Map<string, BudgetWithStats[]>();
-    budgets.forEach((b) => {
+    displayBudgets.forEach((b) => {
       const key = b.category || '其他';
       if (!g.has(key)) g.set(key, []);
       g.get(key)!.push(b);
     });
     return Array.from(g.entries()).sort(([a], [b]) => a.localeCompare(b, 'zh-CN'));
-  }, [budgets]);
+  }, [displayBudgets]);
 
   const renderBudgetList = (list: BudgetWithStats[]) => (
     <BudgetList
@@ -440,6 +485,27 @@ export default function BudgetsPage() {
         </div>
       </div>
 
+      {/* 周区间滑动导航 */}
+      <div className="flex flex-wrap items-center justify-center gap-2 py-1">
+        <Button variant="outline" size="sm" onClick={() => setWeekOffset((o) => o - 1)}>
+          <ChevronLeft className="size-3.5 mr-1" />上一周
+        </Button>
+        <span className="text-sm tabular-nums text-muted-foreground min-w-[200px] text-center">
+          {weekWindow.label}
+        </span>
+        <Button variant="outline" size="sm" onClick={() => setWeekOffset(0)} disabled={weekOffset === 0}>
+          本周
+        </Button>
+        <Button variant="outline" size="sm" onClick={() => setWeekOffset((o) => o + 1)}>
+          下一周<ChevronRight className="size-3.5 ml-1" />
+        </Button>
+      </div>
+      {weekOffset !== 0 && (
+        <p className="text-xs text-muted-foreground text-center">
+          当前查看 {weekWindow.label} 的支出；月/年/自定义预算用率不变，仅支出按该周统计
+        </p>
+      )}
+
       <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as 'expense' | 'income')}>
         <TabsList>
           <TabsTrigger value="expense">支出预算</TabsTrigger>
@@ -476,7 +542,7 @@ export default function BudgetsPage() {
             </Tabs>
           </div>
 
-          {viewMode === 'flat' && renderBudgetList(budgets)}
+          {viewMode === 'flat' && renderBudgetList(displayBudgets)}
 
           {viewMode === 'byCycle' && (
             <div className="space-y-6">

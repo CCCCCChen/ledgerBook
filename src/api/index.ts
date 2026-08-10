@@ -88,12 +88,22 @@ export interface BudgetWithStats extends IBudget {
   used: number;
   rate: number;
   remaining: number;
+  denominator?: number;
   currentPeriodStart?: string;
   currentPeriodEnd?: string;
+  spendingStart?: string;
+  spendingEnd?: string;
+}
+
+export interface BudgetListParams {
+  refDate?: string;
+  spendingStart?: string;
+  spendingEnd?: string;
 }
 
 export const budgetsApi = {
-  list: () => api.get<{ success: boolean; data: BudgetWithStats[] }>('/api/budgets'),
+  list: (params?: BudgetListParams) =>
+    api.get<{ success: boolean; data: BudgetWithStats[] }>('/api/budgets', { params }),
   get: (id: string) => api.get<{ success: boolean; data: BudgetWithStats }>(`/api/budgets/${id}`),
   create: (data: Partial<IBudget>) => api.post<{ success: boolean; data: BudgetWithStats }>('/api/budgets', data),
   update: (id: string, data: Partial<IBudget>) => api.put<{ success: boolean; data: BudgetWithStats }>(`/api/budgets/${id}`, data),

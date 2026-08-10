@@ -4,11 +4,23 @@ const { getDatabase } = require('../db.cjs');
 const { mapBudgetRow, createBudgetStats } = require('../finance-utils.cjs');
 
 // GET /api/budgets — 获取所有预算项目（含执行统计）
+// 查询参数（可选）：
+//   refDate          — 参考日 ISO 字符串（weekly 预算用此滑动周期窗口），默认今天
+//   spendingStart    — 支出查询窗口开始（周滑动时传目标周周一）
+//   spendingEnd      — 支出查询窗口结束（周滑动时传目标周周日）
 router.get('/', (req, res) => {
   try {
     const db = getDatabase();
+    const { refDate, spendingStart, spendingEnd } = req.query;
+    const ref = refDate ? new Date(refDate) : new Date();
+
+    let customWindow = null;
+    if (spendingStart && spendingEnd) {
+      customWindow = { start: spendingStart, end: spendingEnd };
+    }
+
     const budgets = db.prepare('SELECT * FROM budgets ORDER BY created_at DESC').all();
-    const stats = budgets.map((budget) => createBudgetStats(db, budget));
+    const stats = budgets.map((budget) => createBudgetStats(db, budget, ref, customWindow));
     res.json({ success: true, data: stats });
   } catch (error) {
     res.status(500).json({ success: false, message: '获取预算列表失败', error: error.message });

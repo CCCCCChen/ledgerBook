@@ -1,25 +1,34 @@
 // ============================================================
 // 预算服务模块
 // ============================================================
-import { budgetsApi, type BudgetWithStats } from '@/api/index';
+import { budgetsApi, type BudgetWithStats, type BudgetListParams } from '@/api/index';
 import type { IBudget } from '@/types/finance';
 import { isElectronRuntime } from '../electron-api';
 import { lsLoadBudgets, lsSaveBudgets, lsLoadTransactions, lsSaveTransactions } from '../storage';
 import { getBudgetCycleWindow, getBudgetUsedInWindow, getBudgetRate } from '../finance-utils';
 import { nowLocalISODate } from '../date';
 
-export async function loadBudgets(): Promise<BudgetWithStats[]> {
+export async function loadBudgets(params?: BudgetListParams): Promise<BudgetWithStats[]> {
   if (isElectronRuntime()) {
     try {
-      const res = await budgetsApi.list();
+      const res = await budgetsApi.list(params);
       return res.success ? res.data : lsLoadBudgets().map((b) => ({ ...b, used: 0, rate: 0, remaining: b.amount }));
     } catch {
       return lsLoadBudgets().map((b) => ({ ...b, used: 0, rate: 0, remaining: b.amount }));
     }
   }
+  // localStorage 模式：支持 refDate 和 spendingWindow
+  const refDate = params?.refDate ? new Date(params.refDate) : new Date();
+  const spendingStart = params?.spendingStart;
+  const spendingEnd = params?.spendingEnd;
+
   return lsLoadBudgets().map((budget) => {
-    const window = getBudgetCycleWindow(budget);
-    const used = getBudgetUsedInWindow(budget, lsLoadTransactions(), window);
+    const window = getBudgetCycleWindow(budget, refDate);
+    const transactions = lsLoadTransactions();
+    // 支出统计窗口：有 spendingWindow 时用它，否则用当前周期窗口
+    const used = spendingStart && spendingEnd
+      ? getBudgetUsedInWindow(budget, transactions, { start: spendingStart, end: spendingEnd })
+      : getBudgetUsedInWindow(budget, transactions, window);
     return {
       ...budget,
       used,
@@ -27,6 +36,8 @@ export async function loadBudgets(): Promise<BudgetWithStats[]> {
       remaining: Math.max(0, budget.amount - used),
       currentPeriodStart: window?.start,
       currentPeriodEnd: window?.end,
+      spendingStart,
+      spendingEnd,
     };
   });
 }

@@ -67,7 +67,18 @@ export async function apiFetch<T>(
  * 便捷方法
  */
 export const api = {
-  get: <T>(path: string) => apiFetch<T>(path),
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  get: <T>(path: string, opts?: { params?: Record<string, any> }) => {
+    let url = path;
+    if (opts?.params) {
+      const qs = Object.entries(opts.params)
+        .filter(([, v]) => v !== undefined)
+        .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v!)}`)
+        .join('&');
+      if (qs) url = `${path}?${qs}`;
+    }
+    return apiFetch<T>(url);
+  },
 
   post: <T>(path: string, data?: unknown) =>
     apiFetch<T>(path, {
