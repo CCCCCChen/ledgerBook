@@ -36,5 +36,13 @@ export {
   forecastApi,
 } from './services/forecastService';
 
+export {
+  loadIncomeBudgets,
+  saveIncomeBudgets,
+  createIncomeBudget,
+  updateIncomeBudget,
+  deleteIncomeBudget,
+} from './services/incomeBudgetService';
+
 // 统计（仅 Electron 模式走 API）—— 保持原样 re-export
 export { statisticsApi } from '@/api/index';

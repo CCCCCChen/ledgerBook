@@ -14,7 +14,8 @@ export { nowLocalISODate };
 export async function loadTransactions(): Promise<ITransaction[]> {
   if (isElectronRuntime()) {
     try {
-      const res = await transactionsApi.list();
+      // 显式传一个很大的 limit，避免后端默认 LIMIT 50 截断历史数据（老交易全落在第 2 页以后永远拉不到）
+      const res = await transactionsApi.list({ limit: 100000, page: 1 });
       return res.success ? res.data : lsLoadTransactions();
     } catch {
       return lsLoadTransactions();

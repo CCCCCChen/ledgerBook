@@ -39,6 +39,7 @@ router.get('/:id/debt', (req, res) => {
     }
 
     const today = new Date().toISOString().slice(0, 10);
+    const currentMonth = today.slice(0, 7); // YYYY-MM，用于只统计当月到账的分期月供
     let totalDebt = 0;
     let installmentMonthlyPayment = 0;
     let installmentTotalPeriods = 0;
@@ -53,9 +54,13 @@ router.get('/:id/debt', (req, res) => {
     installmentRows.forEach((row) => {
       const cashOutDate = row.cash_out_date || row.date;
       if (cashOutDate > today) {
-        // 未来未还债务
+        // 未来未还债务全部计入总负债
         totalDebt += Math.abs(row.amount);
-        installmentMonthlyPayment += Math.abs(row.amount); // 每期金额即月供
+        // 仅 cash_out_date 落在当月的才计入「本月分期月供」，避免把未来所有分期一次性叠入「本月」
+        const coMonth = String(cashOutDate).slice(0, 7);
+        if (coMonth === currentMonth) {
+          installmentMonthlyPayment += Math.abs(row.amount);
+        }
         if (row.installment_total) {
           installmentTotalPeriods = Math.max(installmentTotalPeriods, row.installment_total - (row.installment_index || 0) + 1);
         }

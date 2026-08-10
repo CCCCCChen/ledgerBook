@@ -28,8 +28,12 @@ export default function CashFlowPage() {
   const loadData = useCallback(async () => {
     try {
       // 加载收入预算预测
-      const res = await incomeBudgetsApi.projection(startDate, endDate);
-      setProjections(res || []);
+      try {
+        const res = await incomeBudgetsApi.projection(startDate, endDate);
+        setProjections(Array.isArray(res) ? res : []);
+      } catch {
+        setProjections([]);
+      }
 
       // 加载账户
       const accs = await loadAccounts();
@@ -39,7 +43,7 @@ export default function CashFlowPage() {
       const txns = await loadTransactions();
       setTransactions(txns);
     } catch (e) {
-      console.error('加载现金流数据失败', e);
+      console.warn('加载现金流数据失败', e);
     }
   }, [startDate, endDate]);
 
@@ -114,27 +118,26 @@ export default function CashFlowPage() {
   }, [cashFlowData]);
 
   return (
-    <div className="min-h-screen bg-background">
-      <main className="space-y-8">
-        {/* Hero */}
-        <section className="w-full bg-gradient-to-br from-primary/5 via-background to-accent/30 py-12 md:py-16">
-          <div className="max-w-7xl mx-auto px-4 md:px-6">
-            <div className="flex items-center gap-3 mb-3">
-              <div className="size-10 rounded-xl bg-primary/10 flex items-center justify-center">
-                <DollarSign className="size-5 text-primary" />
-              </div>
-              <h1 className="text-2xl md:text-3xl font-bold text-foreground">现金流分析</h1>
+    <div className="space-y-8">
+      {/* Hero */}
+      <section className="w-full bg-gradient-to-br from-primary/5 via-background to-accent/30 -mx-4 sm:-mx-6 lg:-mx-10 px-4 sm:px-6 lg:px-10 py-12 md:py-16 -mt-6 lg:-mt-8">
+        <div>
+          <div className="flex items-center gap-3 mb-3">
+            <div className="size-10 rounded-xl bg-primary/10 flex items-center justify-center">
+              <DollarSign className="size-5 text-primary" />
             </div>
-            <p className="text-muted-foreground max-w-xl">
-              结合收入预算和历史支出数据，预测未来现金流走势
-            </p>
+            <h1 className="text-2xl md:text-3xl font-bold text-foreground">现金流分析</h1>
           </div>
-        </section>
+          <p className="text-muted-foreground max-w-xl">
+            结合收入预算和历史支出数据，预测未来现金流走势
+          </p>
+        </div>
+      </section>
 
-        {/* 参数设置 */}
-        <section className="w-full">
-          <div className="max-w-7xl mx-auto px-4 md:px-6">
-            <Card>
+      {/* 参数设置 */}
+      <section className="w-full">
+        <div>
+          <Card>
               <CardHeader>
                 <CardTitle className="text-lg">预测参数</CardTitle>
               </CardHeader>
@@ -188,7 +191,7 @@ export default function CashFlowPage() {
         {/* 统计卡片 */}
         {stats && (
           <section className="w-full">
-            <div className="max-w-7xl mx-auto px-4 md:px-6">
+            <div>
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 <Card>
                   <CardContent className="pt-6">
@@ -241,7 +244,7 @@ export default function CashFlowPage() {
 
         {/* 月度明细 */}
         <section className="w-full">
-          <div className="max-w-7xl mx-auto px-4 md:px-6">
+          <div>
             <Card>
               <CardHeader>
                 <CardTitle className="text-lg">月度现金流明细</CardTitle>
@@ -297,7 +300,7 @@ export default function CashFlowPage() {
 
         {/* 收入预算来源 */}
         <section className="w-full pb-12">
-          <div className="max-w-7xl mx-auto px-4 md:px-6">
+          <div>
             <Card>
               <CardHeader>
                 <CardTitle className="text-lg">收入预算来源</CardTitle>
@@ -334,7 +337,6 @@ export default function CashFlowPage() {
             </Card>
           </div>
         </section>
-      </main>
     </div>
   );
 }

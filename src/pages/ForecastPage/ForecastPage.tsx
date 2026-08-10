@@ -128,17 +128,25 @@ export default function ForecastPage() {
         loadBudgets(),
         loadAccounts(),
         loadPlannedExpenses(),
-        incomeBudgetsApi.projection(rangeFrom, rangeTo),
+        Promise.resolve<IIncomeBudgetProjection[]>([]).catch(() => []), // 占位，保证 Promise.all 不抛错
       ]);
+      // 额外尝试拉后端收入预算预测（非 Electron 环境下失败则降级为空数组，不影响整体加载）
+      let projectionList: IIncomeBudgetProjection[] = projections || [];
+      try {
+        const res = await incomeBudgetsApi.projection(rangeFrom, rangeTo);
+        if (Array.isArray(res)) projectionList = res;
+      } catch {
+        // ignore: 非 Electron 环境或接口失败
+      }
       setTransactions(txns);
       setBudgets(bdgs);
       setAccounts(accts);
       setPlannedExpenses(planned);
-      setMonthlyProjections(projections || []);
+      setMonthlyProjections(projectionList);
     } catch (error) {
       toast.error(`加载预测数据失败：${String(error)}`);
     }
-  }, []);
+  }, [rangeFrom, rangeTo, startBalance, safetyLine, includePlannedExpenses, includeBudgetSettlement]);
 
   useEffect(() => {
     void refreshAll();
@@ -676,20 +684,19 @@ export default function ForecastPage() {
   // ============================================================
 
   return (
-    <div className="min-h-screen bg-background">
-      <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-foreground">预期账单</h1>
-            <p className="text-sm text-muted-foreground mt-1">
-              查看未来支出、分期账单以及预算结算对结余的影响
-            </p>
-          </div>
-          <Button variant="outline" onClick={() => navigate('/statistics')}>
-            查看统计
-          </Button>
+    <div className="space-y-6">
+      {/* Header */}
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">预期账单</h1>
+          <p className="text-sm text-muted-foreground mt-1">
+            查看未来支出、分期账单以及预算结算对结余的影响
+          </p>
         </div>
+        <Button variant="outline" onClick={() => navigate('/statistics')}>
+          查看统计
+        </Button>
+      </div>
 
         {/* Strategy Selector */}
         <Card>
@@ -911,7 +918,6 @@ export default function ForecastPage() {
             )}
           </CardContent>
         </Card>
-      </main>
 
       {/* Planned Expense Dialog */}
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}>

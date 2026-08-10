@@ -126,7 +126,7 @@ function buildNormalTransaction(payload) {
     id: createId('txn'),
     date: payload.date,
     accountId: payload.accountId,
-    amount: Number(payload.amount),
+    amount: payload.isExpense ? -Math.abs(Number(payload.amount)) : Number(payload.amount),
     category: payload.category,
     expenseAttribute: payload.expenseAttribute || null,
     note: payload.note || '',
@@ -234,11 +234,16 @@ router.get('/', (req, res) => {
 
     const order = sortOrder === 'asc' ? 'ASC' : 'DESC';
     const page = Math.max(1, parseInt(pageParam, 10) || 1);
-    const limit = Math.min(200, Math.max(1, parseInt(limitParam, 10) || 50));
-    const offset = (page - 1) * limit;
+    // 未传 limit 时返回全量（避免前端 loadTransactions 只拿 page=1 的 50 条，导致 7 月之前的老交易全落在第 2 页以后永远显示不出来）
+    const hasPaging = typeof limitParam === 'string' && limitParam.trim() !== '';
+    const rawLimit = hasPaging ? parseInt(limitParam, 10) : NaN;
+    const limit = hasPaging ? Math.min(5000, Math.max(1, rawLimit || 0)) : -1;
+    const offset = limit > 0 ? (page - 1) * limit : 0;
 
-    const dataSql = `SELECT * FROM transactions ${whereClause} ORDER BY date ${order}, created_at ${order} LIMIT ? OFFSET ?`;
-    const dataParams = [...params, limit, offset];
+    const dataSql = limit > 0
+      ? `SELECT * FROM transactions ${whereClause} ORDER BY date ${order}, created_at ${order} LIMIT ? OFFSET ?`
+      : `SELECT * FROM transactions ${whereClause} ORDER BY date ${order}, created_at ${order}`;
+    const dataParams = limit > 0 ? [...params, limit, offset] : [...params];
 
     const rows = db.prepare(dataSql).all(...dataParams);
     const mapped = rows.map(mapTransaction);
@@ -277,6 +282,7 @@ router.post('/', (req, res) => {
       isBudgeted,
       budgetId,
       expenseAttribute,
+      isExpense = true,
       transactionType = 'normal',
       repaymentTargetAccountId,
       installmentCount,
@@ -325,6 +331,7 @@ router.post('/', (req, res) => {
         expenseAttribute,
         isBudgeted,
         budgetId,
+        isExpense,
         transactionType,
       });
     }
@@ -350,17 +357,17 @@ router.put('/:id', (req, res) => {
     }
 
     const now = new Date().toISOString();
-    const { date, accountId, amount, category, note, isBudgeted, budgetId, editScope = 'single' } = req.body;
-    const { expenseAttribute } = req.body;
+    const { date, accountId, amount, category, note, isBudgeted, budgetId, editScope = 'single', expenseAttribute } = req.body;
+    const isExpense = req.body.isExpense != null ? req.body.isExpense : existing.amount < 0;
 
     if (existing.transaction_type === 'repayment_out' || existing.transaction_type === 'repayment_in') {
       return res.status(400).json({ success: false, message: '还款联动记录暂不支持编辑，请删除后重新创建' });
     }
 
     if (existing.transaction_type === 'installment_bill') {
-      const nextAmount = amount != null ? Number(amount) : existing.amount;
+      const nextAmount = amount != null ? (isExpense ? -Math.abs(Number(amount)) : Math.abs(Number(amount))) : existing.amount;
       const nextCategory = category ?? existing.category;
-      const nextExpenseAttribute = amount != null && Number(amount) < 0 ? (expenseAttribute ?? existing.expense_attribute) : null;
+      const nextExpenseAttribute = nextAmount < 0 ? (expenseAttribute ?? existing.expense_attribute) : null;
       const nextIsBudgeted = isBudgeted != null ? (isBudgeted ? 1 : 0) : existing.is_budgeted;
       const nextBudgetId = isBudgeted != null ? (isBudgeted && budgetId ? budgetId : null) : existing.budget_id;
 
@@ -443,7 +450,7 @@ router.put('/:id', (req, res) => {
 
     const nextDate = date ?? existing.date;
     const nextAccountId = accountId ?? existing.account_id;
-    const nextAmount = amount != null ? Number(amount) : existing.amount;
+    const nextAmount = amount != null ? (isExpense ? -Math.abs(Number(amount)) : Math.abs(Number(amount))) : existing.amount;
     const nextExpenseAttribute = nextAmount < 0 ? (expenseAttribute ?? existing.expense_attribute) : null;
     const nextCashOutDate = resolveTransactionCashOutDate(
       {

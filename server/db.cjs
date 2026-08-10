@@ -32,28 +32,49 @@ function migrateBudgetsTableIfNeeded() {
     return;
   }
 
-  db.exec(`
-    CREATE TABLE budgets_new (
-      id          TEXT PRIMARY KEY,
-      name        TEXT NOT NULL,
-      amount      REAL NOT NULL CHECK(amount > 0),
-      cycle_type  TEXT NOT NULL CHECK(cycle_type IN ('once','weekly','monthly','yearly','custom')),
-      start_date  TEXT NOT NULL,
-      end_date    TEXT,
-      cycle_days  INTEGER,
-      category    TEXT,
-      tag         TEXT CHECK(tag IN ('normal','long_term_over','over_budget','under_spent','reasonable')),
-      created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-      updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
-    );
+  const migrate = db.transaction(() => {
+    db.exec(`
+      CREATE TABLE budgets_new (
+        id          TEXT PRIMARY KEY,
+        name        TEXT NOT NULL,
+        amount      REAL NOT NULL CHECK(amount > 0),
+        cycle_type  TEXT NOT NULL CHECK(cycle_type IN ('once','weekly','monthly','yearly','custom')),
+        start_date  TEXT NOT NULL,
+        end_date    TEXT,
+        cycle_days  INTEGER,
+        category    TEXT,
+        tag         TEXT CHECK(tag IN ('normal','long_term_over','over_budget','under_spent','reasonable')),
+        created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
 
-    INSERT INTO budgets_new (id, name, amount, cycle_type, start_date, end_date, cycle_days, category, tag, created_at, updated_at)
-    SELECT id, name, amount, cycle_type, start_date, end_date, NULL, category, NULL, created_at, updated_at
-    FROM budgets;
+      INSERT INTO budgets_new (id, name, amount, cycle_type, start_date, end_date, cycle_days, category, tag, created_at, updated_at)
+      SELECT id, name, amount, cycle_type, start_date, end_date, NULL, category, NULL, created_at, updated_at
+      FROM budgets;
+    `);
 
-    DROP TABLE budgets;
-    ALTER TABLE budgets_new RENAME TO budgets;
-  `);
+    const before = db.prepare('SELECT COUNT(*) AS c FROM budgets').get().c;
+    const after = db.prepare('SELECT COUNT(*) AS c FROM budgets_new').get().c;
+    if (before !== after) {
+      throw new Error(`budgets 迁移行数校验失败：原表 ${before} 行，新表 ${after} 行，已自动回滚`);
+    }
+
+    db.exec('DROP TABLE budgets; ALTER TABLE budgets_new RENAME TO budgets;');
+  });
+
+  try {
+    migrate();
+  } catch (error) {
+    console.error('[db] migrateBudgetsTableIfNeeded 迁移失败，已自动回滚，跳过重建。错误：', error.message);
+    try {
+      db.exec('DROP TABLE IF EXISTS budgets_new;');
+    } catch {
+      // ignore
+    }
+    // 迁移失败不阻塞应用启动，至少保证老数据能读出来
+    ensureColumn('budgets', 'cycle_days', 'INTEGER');
+    ensureColumn('budgets', 'tag', "TEXT CHECK(tag IN ('normal','long_term_over','over_budget','under_spent','reasonable'))");
+  }
 }
 
 function migrateTransactionsTable() {
@@ -390,17 +411,75 @@ function initDatabase(dbPathOrDir, allowRecovery = true) {
       db = null;
     }
 
+    const errorCode = error?.code;
+    const errorMsg = String(error?.message || '');
+
+    // ===== 安全机制：只有确认 DB 文件"真的损坏到无法打开"时才 rename =====
+    // 之前的误触发场景：
+    //  1) WAL/shm 锁文件存在 -> better-sqlite3 临时抛错 -> 实际 DB 完好
+    //  2) 两个 Electron 进程同时启动抢锁 -> 第一个正常打开，第二个 SQLITE_BUSY / SQLITE_CANTOPEN
+    //  3) 用户目录权限波动 -> 下次启动就好
+    // 以上 3 种情况都不应把原 budget.db 改名成 backup。
+    const isLikelyConcurrencyOrLockIssue =
+      errorCode === 'SQLITE_BUSY' ||
+      errorCode === 'SQLITE_LOCKED' ||
+      errorMsg.includes('database is locked') ||
+      errorMsg.includes('locking protocol') ||
+      errorMsg.includes('journal') ||
+      errorMsg.includes('WAL') ||
+      errorMsg.includes('permission denied') ||
+      errorMsg.includes('access is denied') ||
+      errorMsg.includes('另一个进程') ||
+      errorMsg.includes('被另一进程');
+
+    if (isLikelyConcurrencyOrLockIssue) {
+      console.error(
+        '[db] 数据库疑似锁/并发问题（code=' + errorCode + '），拒绝自动 rename 原 DB 文件。' +
+          '请关闭所有"个人收支预算管家"窗口和托盘后重试，或手动杀死遗留的 Electron 进程。',
+      );
+      throw error;
+    }
+
     const shouldRecover =
       allowRecovery &&
       fs.existsSync(dbPath) &&
-      (error?.code === 'SQLITE_CANTOPEN' || String(error?.message || '').includes('unable to open database file'));
+      (errorCode === 'SQLITE_CANTOPEN' ||
+        errorCode === 'SQLITE_NOTADB' ||
+        errorMsg.includes('unable to open database file') ||
+        errorMsg.includes('file is encrypted or is not a database') ||
+        errorMsg.includes('malformed database schema') ||
+        errorMsg.includes('corrupt'));
 
     if (!shouldRecover) {
       throw error;
     }
 
+    // 备份时保留 .recovery- 前缀，便于你事后恢复（不自动删，保留所有历史）
     const backupPath = `${dbPath}.recovery-${Date.now()}`;
-    fs.renameSync(dbPath, backupPath);
+    console.warn(
+      `[db] 检测到数据库文件可能损坏（code=${errorCode}），为避免数据永久丢失，\n` +
+        `   将原 DB 文件重命名为：\n     ${backupPath}\n` +
+        `   然后新建一个干净的 budget.db（仅含初始 mock 数据）。\n` +
+        `   如需找回数据：先关闭应用，再用上面的 .recovery 文件替换 budget.db 重新打开即可。`,
+    );
+    try {
+      fs.renameSync(dbPath, backupPath);
+    } catch (renameErr) {
+      console.error('[db] rename 备份失败，放弃自动恢复：', renameErr?.message);
+      throw error;
+    }
+
+    // 连同 WAL/SHM 也一起改名备份（否则 better-sqlite3 打开新的空 db 时会读到旧 WAL 导致"幻影数据"或校验错）
+    const extras = [dbPath + '-wal', dbPath + '-shm', dbPath + '-journal'];
+    extras.forEach((extra) => {
+      if (fs.existsSync(extra)) {
+        try {
+          fs.renameSync(extra, `${extra}.recovery-${Date.now()}`);
+        } catch {
+          // ignore
+        }
+      }
+    });
 
     return initDatabase(dbPath, false);
   }

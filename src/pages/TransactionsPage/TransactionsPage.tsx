@@ -18,6 +18,8 @@ import {
   loadTransactions,
   loadAccounts,
   loadBudgets,
+  loadIncomeBudgets,
+  loadPlannedExpenses,
   createTransaction,
   updateTransaction,
   deleteTransaction,
@@ -66,17 +68,14 @@ export const EMPTY_FORM: TransactionFormData = {
   editScope: 'plan',
 };
 
-const CATEGORIES: string[] = [
-  '餐饮', '交通', '购物', '住房', '娱乐', '医疗', '教育', '通讯', '服饰', '日用品', '旅行',
-  '投资', '工资', '奖金', '兼职', '理财收益', '退款', '其他',
-];
+const CATEGORIES: string[] = ['餐饮', '购物', '交通', '娱乐', '住房', '其他'];
 
-const EXPENSE_ATTRIBUTE_OPTIONS: string[] = ['need', 'want', 'investment', 'debt_repayment'];
+const EXPENSE_ATTRIBUTE_OPTIONS: string[] = ['rigid_fixed', 'flexible_monthly', 'annual_cycle', 'one_time_emergency'];
 const EXPENSE_ATTRIBUTE_LABELS: Record<string, string> = {
-  need: '刚需',
-  want: '改善',
-  investment: '投资',
-  debt_repayment: '还款',
+  rigid_fixed: '刚性固定支出',
+  flexible_monthly: '弹性月度支出',
+  annual_cycle: '年度周期支出',
+  one_time_emergency: '一次性突发支出',
 };
 
 const TRANSACTION_TYPE_LABELS: Record<string, string> = {
@@ -412,7 +411,7 @@ const TransactionsPage: React.FC = () => {
   }, [editingId, editingMeta, fetchData, handleCancel, toast]);
 
   // Import / Export
-  const handleExport = useCallback(() => {
+  const handleExportCsv = useCallback(() => {
     const csv = [
       '日期,账户,分类,类型,金额,备注,预算,支出属性',
       ...filtered.map((t) =>
@@ -432,10 +431,44 @@ const TransactionsPage: React.FC = () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `transactions_${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `transactions-filtered_${new Date().toISOString().slice(0, 10)}.csv`;
     a.click();
     URL.revokeObjectURL(url);
   }, [filtered, getAccountName, getTransactionTypeLabel, getBudgetName]);
+
+  const handleExportFullJson = useCallback(async () => {
+    try {
+      const [txns, accts, buds, incomeBuds, plannedExps] = await Promise.all([
+        loadTransactions(),
+        loadAccounts(),
+        loadBudgets(),
+        loadIncomeBudgets(),
+        loadPlannedExpenses(),
+      ]);
+      const data = {
+        version: 1,
+        exportedAt: new Date().toISOString(),
+        scope: 'full-database' as const,
+        transactions: txns,
+        accounts: accts,
+        budgets: buds,
+        incomeBudgets: incomeBuds,
+        plannedExpenses: plannedExps,
+      };
+      const blob = new Blob([JSON.stringify(data, null, 2)], {
+        type: 'application/json;charset=utf-8;',
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `ledgerbook-full-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+      toast.success('全量数据已导出（含 5 张表）');
+    } catch (err) {
+      toast.error('全量导出失败', { description: String(err) });
+    }
+  }, []);
 
   const handleImport = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -476,11 +509,11 @@ const TransactionsPage: React.FC = () => {
 
   // Debit accounts for repayment
   const debitAccounts = useMemo(
-    () => accounts.filter((a) => a.type !== 'credit_card' && a.type !== 'huabei'),
+    () => accounts.filter((a) => a.type !== 'credit_card' && a.type !== 'alipay_huabei'),
     [accounts],
   );
   const repaymentTargets = useMemo(
-    () => accounts.filter((a) => a.type === 'credit_card' || a.type === 'huabei'),
+    () => accounts.filter((a) => a.type === 'credit_card' || a.type === 'alipay_huabei'),
     [accounts],
   );
 
@@ -504,9 +537,13 @@ const TransactionsPage: React.FC = () => {
             <FileUp className="size-3.5" />
             导入
           </Button>
-          <Button variant="outline" size="sm" onClick={handleExport} className="gap-1.5">
+          <Button variant="outline" size="sm" onClick={handleExportCsv} className="gap-1.5">
             <FileDown className="size-3.5" />
-            导出
+            导出筛选结果
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => void handleExportFullJson()} className="gap-1.5">
+            <FileDown className="size-3.5" />
+            导出全量数据
           </Button>
           <Button size="sm" onClick={openAddDialog} className="gap-1.5">
             <Plus className="size-3.5" />

@@ -22,14 +22,20 @@ export default function CreditDebtPage() {
     void Promise.all([loadTransactions(), loadAccounts()]).then(([txns, accts]) => {
       setTransactions(txns);
       setAccounts(accts);
-      // 为每个信用账户加载负债聚合数据
       const creditAccts = accts.filter(
         (a) => a.type === 'credit_card' || a.type === 'alipay_huabei'
       );
       void Promise.all(
-        creditAccts.map((a) =>
-          accountsApi.debt(a.id).then((res) => (res.success ? { id: a.id, data: res.data } : null))
-        )
+        creditAccts.map(async (a) => {
+          try {
+            const res = await accountsApi.debt(a.id);
+            if (res.success) return { id: a.id, data: res.data };
+            return null;
+          } catch (err) {
+            console.warn(`[CreditDebt] 加载账户 ${a.id} 负债数据失败：`, String(err));
+            return null;
+          }
+        })
       ).then((results) => {
         const map = new Map<string, AccountDebtInfo>();
         results.forEach((r) => {
@@ -162,38 +168,44 @@ export default function CreditDebtPage() {
     let monthlyInterest = 0;
     let totalInterest = 0;
 
-    // 从 API 负债数据汇总
     debtData.forEach((info) => {
-      totalDebt += info.totalDebt;
-      totalInstallmentPayment += info.installmentMonthlyPayment;
+      totalDebt += Number(info.totalDebt) || 0;
+      totalInstallmentPayment += Number(info.installmentMonthlyPayment) || 0;
     });
 
-    // 从客户端计算本月待还和利息
     Object.values(creditStats).forEach((stat) => {
-      monthlyRepayment += stat.monthlyRepayment;
-      monthlyInterest += stat.monthlyInterest;
-      totalInterest += stat.totalInterest;
+      const safe = stat || { monthlyRepayment: 0, monthlyInterest: 0, totalInterest: 0 };
+      monthlyRepayment += Number(safe.monthlyRepayment) || 0;
+      monthlyInterest += Number(safe.monthlyInterest) || 0;
+      totalInterest += Number(safe.totalInterest) || 0;
     });
 
     return { totalDebt, monthlyRepayment, totalInstallmentPayment, monthlyInterest, totalInterest };
   }, [creditStats, debtData]);
 
   const repaymentPressureRows = useMemo(() => {
-    const incomeBase = 15000; // 后续可改为可配置或从历史收入推断
+    const twelveMonthsAgo = new Date(today);
+    twelveMonthsAgo.setFullYear(twelveMonthsAgo.getFullYear() - 1);
+    const cutoff = formatLocalISODate(twelveMonthsAgo);
+    const annualIncome = transactions
+      .filter((t) => t.date >= cutoff && t.amount > 0)
+      .reduce((s, t) => s + t.amount, 0);
+    const historicalAvgMonthly = annualIncome > 0 ? annualIncome / 12 : 0;
+    const incomeBase = Math.max(historicalAvgMonthly, 10000);
     return creditAccounts.map((account) => {
       const stat = creditStats[account.id] || { totalDebt: 0, monthlyRepayment: 0, monthlyInstallment: 0, monthlyInterest: 0 };
-      const monthlyTotal = stat.monthlyRepayment + stat.monthlyInstallment + stat.monthlyInterest;
+      const monthlyTotal = (Number(stat.monthlyRepayment) || 0) + (Number(stat.monthlyInstallment) || 0) + (Number(stat.monthlyInterest) || 0);
       const ratio = incomeBase > 0 ? (monthlyTotal / incomeBase) * 100 : 0;
       return {
         ...account,
-        monthlyRepayment: stat.monthlyRepayment,
-        monthlyInstallment: stat.monthlyInstallment,
-        monthlyInterest: stat.monthlyInterest,
+        monthlyRepayment: Number(stat.monthlyRepayment) || 0,
+        monthlyInstallment: Number(stat.monthlyInstallment) || 0,
+        monthlyInterest: Number(stat.monthlyInterest) || 0,
         monthlyTotal,
         ratio,
       };
     });
-  }, [creditAccounts, creditStats]);
+  }, [creditAccounts, creditStats, transactions, today]);
 
   const prepaymentSimulation = useMemo(() => {
     const amount = Number(prepayAmount || 0);
@@ -203,12 +215,11 @@ export default function CreditDebtPage() {
   }, [prepayAmount, summary.totalDebt, creditAccounts.length]);
 
   return (
-    <div className="min-h-screen bg-background">
-      <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-foreground">信贷与负债</h1>
-          <p className="text-sm text-muted-foreground mt-1">统一查看花呗、信用卡、分期月供、利息成本与提前还款影响</p>
-        </div>
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold text-foreground">信贷与负债</h1>
+        <p className="text-sm text-muted-foreground mt-1">统一查看花呗、信用卡、分期月供、利息成本与提前还款影响</p>
+      </div>
 
         <Card>
           <CardHeader>
@@ -370,7 +381,6 @@ export default function CreditDebtPage() {
             </CardContent>
           </Card>
         </div>
-      </main>
     </div>
   );
 }

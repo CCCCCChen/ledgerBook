@@ -33,8 +33,33 @@ function log(msg) {
   try { process.stdout.write(line); } catch {}
 }
 
-/** 清理端口占用：lsof -ti:<port> | kill -9 */
+/** 清理端口占用 */
 function killOrphansByPort(port) {
+  if (process.platform === 'win32') {
+    try {
+      const out = execSync(`netstat -ano | findstr ":${port}"`, { stdio: ['ignore', 'pipe', 'ignore'] })
+        .toString()
+        .trim();
+      if (!out) return [];
+      const pids = new Set();
+      for (const line of out.split('\n').filter(Boolean)) {
+        const parts = line.trim().split(/\s+/);
+        const pid = parts[parts.length - 1];
+        if (pid && pid !== '0' && pid !== String(process.pid)) pids.add(pid);
+      }
+      for (const pid of pids) {
+        try {
+          execSync(`taskkill /F /PID ${pid}`, { stdio: 'ignore' });
+          log(`killed orphan pid=${pid} on :${port}`);
+        } catch {}
+      }
+      return [...pids];
+    } catch {
+      return [];
+    }
+  }
+
+  // Unix: lsof
   try {
     const out = execSync(`lsof -ti:${port}`, { stdio: ['ignore', 'pipe', 'ignore'] })
       .toString()
@@ -102,12 +127,20 @@ function cleanup(signal) {
 
   for (const { child } of managed) {
     if (!child.pid) continue;
-    try { process.kill(-child.pid, signal || 'SIGTERM'); } catch {}
+    if (process.platform === 'win32') {
+      try { execSync(`taskkill /F /T /PID ${child.pid}`, { stdio: 'ignore' }); } catch {}
+    } else {
+      try { process.kill(-child.pid, signal || 'SIGTERM'); } catch {}
+    }
   }
   setTimeout(() => {
     for (const { child } of managed) {
       if (!child.pid) continue;
-      try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+      if (process.platform === 'win32') {
+        try { execSync(`taskkill /F /T /PID ${child.pid}`, { stdio: 'ignore' }); } catch {}
+      } else {
+        try { process.kill(-child.pid, 'SIGKILL'); } catch {}
+      }
     }
     killOrphansByPort(CLIENT_DEV_PORT);
     process.exit(0);

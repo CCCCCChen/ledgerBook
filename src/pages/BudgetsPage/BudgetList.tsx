@@ -15,15 +15,42 @@ interface BudgetListProps {
 }
 
 const getProgressColor = (rate: number): string => {
-  if (rate >= 1) return 'bg-destructive';
-  if (rate >= 0.8) return 'bg-amber-500';
+  if (rate >= 100) return 'bg-destructive';
+  if (rate >= 80) return 'bg-amber-500';
   return 'bg-primary';
 };
 
 const getProgressTextColor = (rate: number): string => {
-  if (rate >= 1) return 'text-destructive';
-  if (rate >= 0.8) return 'text-amber-500';
+  if (rate >= 100) return 'text-destructive';
+  if (rate >= 80) return 'text-amber-500';
   return 'text-foreground';
+};
+
+/**
+ * 格式化预算周期时间范围
+ * - weekly / monthly：M/D ~ M/D（同年），YYYY/M/D ~ YYYY/M/D（跨年）
+ * - yearly：YYYY/M/D ~ YYYY/M/D
+ * - once / custom：按实际日期显示
+ */
+const formatCycleDateRange = (start?: string, end?: string, cycleType?: string): string | null => {
+  if (!start || !end) return null;
+  try {
+    const s = new Date(start + 'T00:00:00');
+    const e = new Date(end + 'T00:00:00');
+    if (isNaN(s.getTime()) || isNaN(e.getTime())) return null;
+
+    const sameYear = s.getFullYear() === e.getFullYear();
+    const fmtShort = (d: Date) => `${d.getMonth() + 1}/${d.getDate()}`;
+    const fmtFull = (d: Date) => `${d.getFullYear()}/${d.getMonth() + 1}/${d.getDate()}`;
+
+    if (cycleType === 'yearly') {
+      return `${fmtFull(s)} ~ ${fmtFull(e)}`;
+    }
+
+    return sameYear ? `${fmtShort(s)} ~ ${fmtShort(e)}` : `${fmtFull(s)} ~ ${fmtFull(e)}`;
+  } catch {
+    return null;
+  }
 };
 
 export const BudgetList: React.FC<BudgetListProps> = ({
@@ -48,8 +75,13 @@ export const BudgetList: React.FC<BudgetListProps> = ({
     <div className="grid gap-4 sm:grid-cols-1 lg:grid-cols-2">
       {budgets.map((budget) => {
         const rate = budget.rate ?? 0;
-        const isOverBudget = rate >= 1;
-        const isWarning = rate >= 0.8 && rate < 1;
+        const isOverBudget = rate >= 100;
+        const isWarning = rate >= 80 && rate < 100;
+        const dateRange = formatCycleDateRange(
+          budget.currentPeriodStart,
+          budget.currentPeriodEnd,
+          budget.cycleType,
+        );
 
         return (
           <Card
@@ -83,6 +115,11 @@ export const BudgetList: React.FC<BudgetListProps> = ({
                     <span className="text-xs text-muted-foreground">
                       {getCycleLabel(budget.cycleType)}
                     </span>
+                    {dateRange && (
+                      <span className="text-xs text-muted-foreground">
+                        {dateRange}
+                      </span>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
@@ -110,7 +147,7 @@ export const BudgetList: React.FC<BudgetListProps> = ({
             <CardContent>
               <div className="mb-2">
                 <Progress
-                  value={Math.min(rate * 100, 100)}
+                  value={Math.min(rate, 100)}
                   indicatorClassName={getProgressColor(rate)}
                   className="h-2"
                 />
@@ -124,7 +161,7 @@ export const BudgetList: React.FC<BudgetListProps> = ({
                 </div>
                 <div className="text-center">
                   <p className="text-xs font-semibold tabular-nums">
-                    {(rate * 100).toFixed(0)}%
+                    {rate.toFixed(0)}%
                   </p>
                   <p className="text-xs text-muted-foreground">使用率</p>
                 </div>
