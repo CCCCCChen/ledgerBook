@@ -189,46 +189,57 @@ function normalizeBudgetToCurrentMonth(budget, opts = {}) {
   }
 
   if (budget.cycleType === 'weekly') {
-    const cycleDays = 7;
-    const rangeDays = prorateMonthly ? todayInMonth : daysInMonth;
+    // 用 getBudgetCycleWindow 取当前周窗口，按与当月的实际重叠天数折算
+    const w = getBudgetCycleWindow(budget, ref);
+    const cycleStart = w ? w.start : budget.startDate;
+    const cycleEnd = w ? w.end : budget.startDate;
+    const cycleTotalDays = 7;
+
+    const ov = _rangeOverlap(cycleStart, cycleEnd, monthStart, monthEnd);
+    const overlapDays = ov ? _dayDiffInclusive(ov[0], ov[1]) : 0;
+    const ratio = overlapDays / cycleTotalDays;
+
     return {
-      usedRangeStart: monthStart,
-      usedRangeEnd: prorateMonthly ? refISO : monthEnd,
-      overlapDays: rangeDays,
-      totalCycleDaysCovered: cycleDays,
-      normalizedBudgetAmount: amount * rangeDays / cycleDays,
+      usedRangeStart: ov ? ov[0] : monthStart,
+      usedRangeEnd: ov ? ov[1] : monthStart,
+      overlapDays,
+      totalCycleDaysCovered: cycleTotalDays,
+      normalizedBudgetAmount: amount * ratio,
     };
   }
 
   if (budget.cycleType === 'yearly') {
-    const cycleDays = 365;
-    const rangeDays = prorateMonthly ? todayInMonth : daysInMonth;
     return {
       usedRangeStart: monthStart,
-      usedRangeEnd: prorateMonthly ? refISO : monthEnd,
-      overlapDays: rangeDays,
-      totalCycleDaysCovered: cycleDays,
-      normalizedBudgetAmount: amount * rangeDays / cycleDays,
+      usedRangeEnd: monthEnd,
+      overlapDays: daysInMonth,
+      totalCycleDaysCovered: 365.25 / 12,
+      normalizedBudgetAmount: amount / 12,
     };
   }
 
-  if (budget.cycleType === 'custom') {
-    if (!budget.cycleDays || budget.cycleDays <= 0) return null;
-    const cycleDays = budget.cycleDays;
-    const rangeDays = prorateMonthly ? todayInMonth : daysInMonth;
-    return {
-      usedRangeStart: monthStart,
-      usedRangeEnd: prorateMonthly ? refISO : monthEnd,
-      overlapDays: rangeDays,
-      totalCycleDaysCovered: cycleDays,
-      normalizedBudgetAmount: amount * rangeDays / cycleDays,
-    };
+  // once / custom
+  let cycleStart = budget.startDate;
+  let cycleEnd = budget.endDate || budget.startDate;
+  let totalDays = 0;
+  if (budget.cycleType === 'custom' && budget.cycleDays > 0) {
+    // custom：用 getBudgetCycleWindow 拿到"当前"那一个周期
+    const w = getBudgetCycleWindow(budget, ref);
+    if (w) {
+      cycleStart = w.start;
+      cycleEnd = w.end;
+    }
+    totalDays = Math.max(1, Number(budget.cycleDays) || 0);
+  } else if (budget.cycleType === 'custom') {
+    return null; // custom 缺 cycleDays → 无法折算
+  } else if (budget.cycleType === 'once') {
+    cycleStart = budget.startDate;
+    cycleEnd = budget.endDate || budget.startDate;
+    totalDays = _dayDiffInclusive(cycleStart, cycleEnd);
+  } else {
+    totalDays = _dayDiffInclusive(cycleStart, cycleEnd);
   }
-
-  // once
-  const cycleStart = budget.startDate;
-  const cycleEnd = budget.endDate || budget.startDate;
-  const totalDays = _dayDiffInclusive(cycleStart, cycleEnd) || 1;
+  if (totalDays <= 0) totalDays = 1;
 
   const ov = _rangeOverlap(cycleStart, cycleEnd, monthStart, monthEnd);
   const overlapDays = ov ? _dayDiffInclusive(ov[0], ov[1]) : 0;
