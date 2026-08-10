@@ -566,14 +566,13 @@ export default function StatisticsPage() {
   }, [filteredTransactions, accounts]);
 
   return (
-    <div className="min-h-screen bg-background">
-      <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6">
-        {/* 页面标题 + 控制区 */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-foreground">预算模拟</h1>
-            <p className="text-sm text-muted-foreground mt-1">财务状态分析、预算执行与未来现金流预测</p>
-          </div>
+    <div className="space-y-6">
+      {/* 页面标题 + 控制区 */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">预算模拟</h1>
+          <p className="text-sm text-muted-foreground mt-1">财务状态分析、预算执行与未来现金流预测</p>
+        </div>
           <Tabs value={selectedPeriod} onValueChange={(v) => setSelectedPeriod(v as StatsPeriod)} className="shrink-0">
             <TabsList className="h-9">
               {Object.entries(PERIOD_LABELS).map(([value, label]) => (
@@ -888,7 +887,6 @@ export default function StatisticsPage() {
             <ReactECharts option={trendChartOption} style={{ height: 400 }} />
           </CardContent>
         </Card>
-      </main>
     </div>
   );
 }

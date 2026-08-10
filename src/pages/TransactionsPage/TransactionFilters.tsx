@@ -146,6 +146,32 @@ export const TransactionFilters: React.FC<TransactionFiltersProps> = ({
         {hasActiveFilters && (
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <span className="text-xs text-muted-foreground">当前筛选：</span>
+            {filterAccountId !== '__all__' && (
+              <Badge variant="secondary" className="text-xs gap-1">
+                账户：{accounts.find((a) => a.id === filterAccountId)?.name || filterAccountId}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-3.5 w-3.5 ml-0.5"
+                  onClick={() => onAccountFilterChange('__all__')}
+                >
+                  <X className="size-2.5" />
+                </Button>
+              </Badge>
+            )}
+            {filterCategory !== '__all__' && (
+              <Badge variant="secondary" className="text-xs gap-1">
+                分类：{filterCategory}
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-3.5 w-3.5 ml-0.5"
+                  onClick={() => onCategoryFilterChange('__all__')}
+                >
+                  <X className="size-2.5" />
+                </Button>
+              </Badge>
+            )}
             {filterDateFrom && (
               <Badge variant="secondary" className="text-xs gap-1">
                 自 {filterDateFrom}

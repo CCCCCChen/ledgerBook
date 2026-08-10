@@ -234,11 +234,16 @@ router.get('/', (req, res) => {
 
     const order = sortOrder === 'asc' ? 'ASC' : 'DESC';
     const page = Math.max(1, parseInt(pageParam, 10) || 1);
-    const limit = Math.min(200, Math.max(1, parseInt(limitParam, 10) || 50));
-    const offset = (page - 1) * limit;
+    // 未传 limit 时返回全量（避免前端 loadTransactions 只拿 page=1 的 50 条，导致 7 月之前的老交易全落在第 2 页以后永远显示不出来）
+    const hasPaging = typeof limitParam === 'string' && limitParam.trim() !== '';
+    const rawLimit = hasPaging ? parseInt(limitParam, 10) : NaN;
+    const limit = hasPaging ? Math.min(5000, Math.max(1, rawLimit || 0)) : -1;
+    const offset = limit > 0 ? (page - 1) * limit : 0;
 
-    const dataSql = `SELECT * FROM transactions ${whereClause} ORDER BY date ${order}, created_at ${order} LIMIT ? OFFSET ?`;
-    const dataParams = [...params, limit, offset];
+    const dataSql = limit > 0
+      ? `SELECT * FROM transactions ${whereClause} ORDER BY date ${order}, created_at ${order} LIMIT ? OFFSET ?`
+      : `SELECT * FROM transactions ${whereClause} ORDER BY date ${order}, created_at ${order}`;
+    const dataParams = limit > 0 ? [...params, limit, offset] : [...params];
 
     const rows = db.prepare(dataSql).all(...dataParams);
     const mapped = rows.map(mapTransaction);

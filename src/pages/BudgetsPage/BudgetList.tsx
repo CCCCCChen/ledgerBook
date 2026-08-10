@@ -15,14 +15,14 @@ interface BudgetListProps {
 }
 
 const getProgressColor = (rate: number): string => {
-  if (rate >= 1) return 'bg-destructive';
-  if (rate >= 0.8) return 'bg-amber-500';
+  if (rate >= 100) return 'bg-destructive';
+  if (rate >= 80) return 'bg-amber-500';
   return 'bg-primary';
 };
 
 const getProgressTextColor = (rate: number): string => {
-  if (rate >= 1) return 'text-destructive';
-  if (rate >= 0.8) return 'text-amber-500';
+  if (rate >= 100) return 'text-destructive';
+  if (rate >= 80) return 'text-amber-500';
   return 'text-foreground';
 };
 
@@ -48,8 +48,8 @@ export const BudgetList: React.FC<BudgetListProps> = ({
     <div className="grid gap-4 sm:grid-cols-1 lg:grid-cols-2">
       {budgets.map((budget) => {
         const rate = budget.rate ?? 0;
-        const isOverBudget = rate >= 1;
-        const isWarning = rate >= 0.8 && rate < 1;
+        const isOverBudget = rate >= 100;
+        const isWarning = rate >= 80 && rate < 100;
 
         return (
           <Card
@@ -110,7 +110,7 @@ export const BudgetList: React.FC<BudgetListProps> = ({
             <CardContent>
               <div className="mb-2">
                 <Progress
-                  value={Math.min(rate * 100, 100)}
+                  value={Math.min(rate, 100)}
                   indicatorClassName={getProgressColor(rate)}
                   className="h-2"
                 />
@@ -124,7 +124,7 @@ export const BudgetList: React.FC<BudgetListProps> = ({
                 </div>
                 <div className="text-center">
                   <p className="text-xs font-semibold tabular-nums">
-                    {(rate * 100).toFixed(0)}%
+                    {rate.toFixed(0)}%
                   </p>
                   <p className="text-xs text-muted-foreground">使用率</p>
                 </div>

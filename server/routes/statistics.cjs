@@ -1,6 +1,8 @@
 const express = require('express');
 const router = express.Router();
 const { getDatabase } = require('../db.cjs');
+const { mapBudgetRow, createBudgetStats } = require('../finance-utils.cjs');
+const { normalizeBudgetToCurrentMonth } = require('../../shared/installment-utils.cjs');
 
 function formatISODate(date) {
   const y = date.getFullYear();
@@ -86,24 +88,33 @@ router.get('/billing-cycle', (req, res) => {
 router.get('/budget-execution', (req, res) => {
   try {
     const db = getDatabase();
+    const refDate = new Date();
     const budgets = db.prepare("SELECT * FROM budgets").all();
 
-    const results = budgets.map((budget) => {
-      const row = db.prepare(
-        "SELECT COALESCE(SUM(ABS(amount)), 0) as used FROM transactions WHERE budget_id = ? AND amount < 0"
-      ).get(budget.id);
+    const results = budgets.map((row) => {
+      const budget = mapBudgetRow(row);
+      const norm = normalizeBudgetToCurrentMonth(budget, { refDate, prorateMonthlyByElapsedDays: false });
+      const denominator = Math.max(0, norm.normalizedBudgetAmount);
 
-      const used = row.used;
-      const rate = budget.amount > 0 ? Math.round((used / budget.amount) * 100) : 0;
+      const params = [budget.id];
+      let sql = "SELECT COALESCE(SUM(ABS(amount)), 0) as used FROM transactions WHERE budget_id = ? AND amount < 0";
+      if (norm.overlapDays > 0) {
+        sql += " AND date >= ? AND date <= ?";
+        params.push(norm.usedRangeStart, norm.usedRangeEnd);
+      }
+      const row_ = db.prepare(sql).get(...params);
+      const used = row_.used || 0;
+      const rate = denominator > 0 ? Math.round((used / denominator) * 100) : 0;
 
       return {
         budgetId: budget.id,
         budgetName: budget.name,
-        budgetAmount: budget.amount,
-        cycleType: budget.cycle_type,
+        originalBudgetAmount: budget.amount,
+        budgetAmount: denominator, // 当月折算后的预算金额（分母）
+        cycleType: budget.cycleType,
         category: budget.category,
         used,
-        remaining: Math.max(0, budget.amount - used),
+        remaining: Math.max(0, denominator - used),
         rate,
         isOverBudget: rate > 100,
         isWarning: rate >= 80 && rate <= 100,
@@ -202,18 +213,25 @@ router.get('/over-budget-alerts', (req, res) => {
     const budgets = db.prepare("SELECT * FROM budgets").all();
 
     const alerts = budgets
-      .map((budget) => {
-        const row = db.prepare(
-          "SELECT COALESCE(SUM(ABS(amount)), 0) as used FROM transactions WHERE budget_id = ? AND amount < 0"
-        ).get(budget.id);
-
-        const used = row.used;
-        const rate = budget.amount > 0 ? Math.round((used / budget.amount) * 100) : 0;
+      .map((row) => {
+        const budget = mapBudgetRow(row);
+        const refDate = new Date();
+        const norm = normalizeBudgetToCurrentMonth(budget, { refDate, prorateMonthlyByElapsedDays: true });
+        const denominator = Math.max(0, norm.normalizedBudgetAmount);
+        const params = [budget.id];
+        let sql = "SELECT COALESCE(SUM(ABS(amount)), 0) as used FROM transactions WHERE budget_id = ? AND amount < 0";
+        if (norm.overlapDays > 0) {
+          sql += " AND date >= ? AND date <= ?";
+          params.push(norm.usedRangeStart, norm.usedRangeEnd);
+        }
+        const rowUsed = db.prepare(sql).get(...params);
+        const used = rowUsed.used || 0;
+        const rate = denominator > 0 ? Math.round((used / denominator) * 100) : 0;
 
         return {
           budgetId: budget.id,
           budgetName: budget.name,
-          budgetAmount: budget.amount,
+          budgetAmount: denominator, // 折算到当月的口径
           used,
           rate,
           severity: rate > 100 ? 'over' : rate >= 80 ? 'warning' : 'normal',

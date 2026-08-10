@@ -18,6 +18,7 @@ import AlertPanel from './AlertPanel';
 import RecentTransactions from './RecentTransactions';
 import { formatLocalISODate, formatLocalISOYearMonth } from '@/lib/date';
 import { getEffectiveTransactionDate } from '@/lib/cashflow';
+import { normalizeBudgetToCurrentMonth } from '@shared/installment-utils';
 
 type StatsPeriod = 'month' | 'quarter' | 'halfyear' | 'year';
 const PERIOD_LABELS: Record<StatsPeriod, string> = {
@@ -185,20 +186,47 @@ export default function DashboardPage() {
 
   // ==========================================
   // 3. 本月预算执行进度
+  //    需求：同分类同时有周预算 + 月预算 → 累加折算后的当月口径
+  //      weekly   amount × 4.345
+  //      monthly  amount × 当月已过天数比例
+  //      yearly   amount ÷ 12
+  //      custom   amount × (自定义周期&当月重叠天数 / 周期天数)
   // ==========================================
   const budgetProgressData = useMemo(() => {
-    const now = new Date();
-    const monthStart = formatLocalISODate(new Date(now.getFullYear(), now.getMonth(), 1));
-    const monthEnd = formatLocalISODate(new Date(now.getFullYear(), now.getMonth() + 1, 0));
+    const refDate = new Date();
+    const monthStart = formatLocalISODate(new Date(refDate.getFullYear(), refDate.getMonth(), 1));
+    const monthEnd = formatLocalISODate(new Date(refDate.getFullYear(), refDate.getMonth() + 1, 0));
 
-    return DEFAULT_CATEGORIES.map(category => {
-      const budget = budgets.find((b: any) => b.category === category);
-      if (!budget || budget.amount <= 0) return null;
-      const actual = transactions
-        .filter(t => t.amount < 0 && t.category === category && t.date >= monthStart && t.date <= monthEnd)
-        .reduce((sum, t) => sum + Math.abs(t.amount), 0);
-      const progress = Math.min(100, (actual / budget.amount) * 100);
-      return { category, budgetAmount: budget.amount, actualAmount: actual, progress };
+    const byCategory = new Map<string, { budgetAmount: number; actualAmount: number }>();
+    budgets.forEach((b: any) => {
+      if (!b || Number(b.amount) <= 0) return;
+      const norm = normalizeBudgetToCurrentMonth(b, { refDate, prorateMonthlyByElapsedDays: true });
+      const deno = Math.max(0, norm.normalizedBudgetAmount);
+      const used = transactions
+        .filter((t) => {
+          if (t.amount >= 0) return false;
+          if (b.category && t.category !== b.category) return false;
+          // 只统计折算口径要求的分子窗口（monthStart..today 或自定义周期 overlap 窗口）
+          if (t.date < norm.usedRangeStart || t.date > norm.usedRangeEnd) return false;
+          if (t.budgetId) return t.budgetId === b.id; // 如果交易显式绑了 budgetId，优先按绑定
+          return true; // 否则按分类聚合
+        })
+        .reduce((s, t) => s + Math.abs(t.amount), 0);
+      const key = (b.category as string) || '其他';
+      const prev = byCategory.get(key) || { budgetAmount: 0, actualAmount: 0 };
+      prev.budgetAmount += deno;
+      prev.actualAmount += used;
+      byCategory.set(key, prev);
+    });
+
+    return DEFAULT_CATEGORIES.map((category) => {
+      const agg = byCategory.get(category);
+      if (!agg || agg.budgetAmount <= 0) return null;
+      const { budgetAmount, actualAmount } = agg;
+      const progress = Math.round(
+        budgetAmount > 0 ? Math.min(99999, (actualAmount / budgetAmount) * 100) : 0,
+      );
+      return { category, budgetAmount, actualAmount, progress };
     }).filter(Boolean);
   }, [transactions, budgets]);
 
@@ -532,14 +560,13 @@ export default function DashboardPage() {
   // ==========================================
 
   return (
-    <div className="min-h-screen bg-background">
-      <main className="max-w-7xl mx-auto px-4 md:px-6 py-6 space-y-6">
-        {/* ① 标题行 */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div>
-            <h1 className="text-2xl font-bold text-foreground">财务仪表盘</h1>
-            <p className="text-sm text-muted-foreground mt-1">财务概况、预警与支出分析</p>
-          </div>
+    <div className="space-y-6">
+      {/* ① 标题行 */}
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-foreground">财务仪表盘</h1>
+          <p className="text-sm text-muted-foreground mt-1">财务概况、预警与支出分析</p>
+        </div>
           <Tabs value={selectedPeriod} onValueChange={(v) => setSelectedPeriod(v as StatsPeriod)} className="shrink-0">
             <TabsList className="h-9">
               {Object.entries(PERIOD_LABELS).map(([value, label]) => (
@@ -635,7 +662,6 @@ export default function DashboardPage() {
 
         {/* ⑩ 最近交易 */}
         <RecentTransactions transactions={filteredTransactions} accounts={accounts} />
-      </main>
     </div>
   );
 }

@@ -1,6 +1,6 @@
 // EXPORTS: getItem, setItem, removeItem, getAllKeys, clearAll, exportAllData, importAllData
 
-import type { ITransaction, IBudget, IAccount, IPlannedExpense } from '@/types/finance';
+import type { ITransaction, IBudget, IAccount, IPlannedExpense, IIncomeBudget } from '@/types/finance';
 import { formatLocalISODate } from './date';
 
 const STORAGE_KEYS = {
@@ -8,6 +8,7 @@ const STORAGE_KEYS = {
   budgets: '__budget_budgets',
   accounts: '__budget_accounts',
   plannedExpenses: '__budget_planned_expenses',
+  incomeBudgets: '__budget_income_budgets',
 } as const;
 
 type StorageKey = (typeof STORAGE_KEYS)[keyof typeof STORAGE_KEYS];
@@ -71,6 +72,7 @@ interface IExportData {
   budgets: unknown[];
   accounts: unknown[];
   plannedExpenses: unknown[];
+  incomeBudgets: unknown[];
 }
 
 function exportAllData(): void {
@@ -82,6 +84,7 @@ function exportAllData(): void {
       budgets: getItem(STORAGE_KEYS.budgets),
       accounts: getItem(STORAGE_KEYS.accounts),
       plannedExpenses: getItem(STORAGE_KEYS.plannedExpenses),
+      incomeBudgets: getItem(STORAGE_KEYS.incomeBudgets),
     };
 
     const blob = new Blob([JSON.stringify(data, null, 2)], {
@@ -111,16 +114,19 @@ function importAllData(jsonString: string): boolean {
     const existingBudgets = getItem(STORAGE_KEYS.budgets);
     const existingAccounts = getItem(STORAGE_KEYS.accounts);
     const existingPlannedExpenses = getItem(STORAGE_KEYS.plannedExpenses);
+    const existingIncomeBudgets = getItem(STORAGE_KEYS.incomeBudgets);
 
     const mergedTransactions = [...existingTransactions, ...data.transactions];
     const mergedBudgets = [...existingBudgets, ...data.budgets];
     const mergedAccounts = [...existingAccounts, ...data.accounts];
     const mergedPlannedExpenses = [...existingPlannedExpenses, ...(Array.isArray(data.plannedExpenses) ? data.plannedExpenses : [])];
+    const mergedIncomeBudgets = [...existingIncomeBudgets, ...(Array.isArray(data.incomeBudgets) ? data.incomeBudgets : [])];
 
     setItem(STORAGE_KEYS.transactions, mergedTransactions);
     setItem(STORAGE_KEYS.budgets, mergedBudgets);
     setItem(STORAGE_KEYS.accounts, mergedAccounts);
     setItem(STORAGE_KEYS.plannedExpenses, mergedPlannedExpenses);
+    setItem(STORAGE_KEYS.incomeBudgets, mergedIncomeBudgets);
 
     return true;
   } catch (error) {
@@ -140,6 +146,8 @@ function lsLoadBudgets(): IBudget[] { return getItem<IBudget>(STORAGE_KEYS.budge
 function lsSaveBudgets(data: IBudget[]): void { setItem<IBudget>(STORAGE_KEYS.budgets, data); }
 function lsLoadPlannedExpenses(): IPlannedExpense[] { return getItem<IPlannedExpense>(STORAGE_KEYS.plannedExpenses); }
 function lsSavePlannedExpenses(data: IPlannedExpense[]): void { setItem<IPlannedExpense>(STORAGE_KEYS.plannedExpenses, data); }
+function lsLoadIncomeBudgets(): IIncomeBudget[] { return getItem<IIncomeBudget>(STORAGE_KEYS.incomeBudgets); }
+function lsSaveIncomeBudgets(data: IIncomeBudget[]): void { setItem<IIncomeBudget>(STORAGE_KEYS.incomeBudgets, data); }
 
 export {
   STORAGE_KEYS,
@@ -148,5 +156,6 @@ export {
   lsLoadAccounts, lsSaveAccounts,
   lsLoadBudgets, lsSaveBudgets,
   lsLoadPlannedExpenses, lsSavePlannedExpenses,
+  lsLoadIncomeBudgets, lsSaveIncomeBudgets,
 };
 export type { StorageKey, IExportData };

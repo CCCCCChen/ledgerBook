@@ -12,10 +12,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import type { IBudget, BudgetCycleType, IIncomeBudget, IAccount } from '@/types/finance';
 import { DEFAULT_CATEGORIES, BUDGET_CYCLE_LABELS } from '@/data/finance';
 import { exportAllData, importAllData } from '@/lib/storage';
-import { createBudget, deleteBudget, loadBudgets, updateBudget } from '@/lib/data-service';
-import { loadAccounts } from '@/lib/data-service';
+import {
+  createBudget, deleteBudget, loadBudgets, updateBudget,
+  loadAccounts, loadIncomeBudgets, createIncomeBudget, updateIncomeBudget, deleteIncomeBudget,
+} from '@/lib/data-service';
 import { getElectronAPI, isElectronRuntime } from '@/lib/electron-api';
-import { incomeBudgetsApi } from '@/api';
 import type { BudgetWithStats } from '@/api';
 import { nowLocalISODate } from '@/lib/date';
 
@@ -136,8 +137,8 @@ export default function BudgetsPage() {
 
   const refreshIncomeBudgets = useCallback(async () => {
     try {
-      const res = await incomeBudgetsApi.list();
-      setIncomeBudgets(res || []);
+      const list = await loadIncomeBudgets();
+      setIncomeBudgets(list || []);
     } catch (e) {
       console.error('load income budgets failed', e);
     }
@@ -157,6 +158,39 @@ export default function BudgetsPage() {
   // Derived
   const overBudgetItems = useMemo(() => budgets.filter((b) => b.rate > 100), [budgets]);
   const warningItems = useMemo(() => budgets.filter((b) => b.rate >= 80 && b.rate <= 100), [budgets]);
+
+  // 分组筛选：支持 全部 / 周期 / 分类 三种维度
+  const [viewMode, setViewMode] = useState<'flat' | 'byCycle' | 'byCategory'>('flat');
+  const cycleOrder: string[] = ['monthly', 'weekly', 'yearly', 'custom', 'once'];
+  const cycleGroups = useMemo(() => {
+    const g = new Map<string, BudgetWithStats[]>();
+    budgets.forEach((b) => {
+      const key = b.cycleType || 'custom';
+      if (!g.has(key)) g.set(key, []);
+      g.get(key)!.push(b);
+    });
+    return Array.from(g.entries())
+      .sort(([a], [b]) => (cycleOrder.indexOf(a) === -1 ? 99 : cycleOrder.indexOf(a)) - (cycleOrder.indexOf(b) === -1 ? 99 : cycleOrder.indexOf(b)));
+  }, [budgets]);
+  const categoryGroups = useMemo(() => {
+    const g = new Map<string, BudgetWithStats[]>();
+    budgets.forEach((b) => {
+      const key = b.category || '其他';
+      if (!g.has(key)) g.set(key, []);
+      g.get(key)!.push(b);
+    });
+    return Array.from(g.entries()).sort(([a], [b]) => a.localeCompare(b, 'zh-CN'));
+  }, [budgets]);
+
+  const renderBudgetList = (list: BudgetWithStats[]) => (
+    <BudgetList
+      budgets={list}
+      getCategoryLabel={getCategoryLabel}
+      getCycleLabel={getCycleLabel}
+      onEdit={openExpenseEdit}
+      onDelete={handleExpenseDelete}
+    />
+  );
 
   // Expense submit
   const handleExpenseSubmit = useCallback(async (e: FormEvent) => {
@@ -260,9 +294,9 @@ export default function BudgetsPage() {
       }
 
       if (editingIncomeId) {
-        await incomeBudgetsApi.update(editingIncomeId, payload);
+        await updateIncomeBudget(editingIncomeId, payload);
       } else {
-        await incomeBudgetsApi.create(payload);
+        await createIncomeBudget(payload);
       }
 
       await refreshIncomeBudgets();
@@ -283,7 +317,7 @@ export default function BudgetsPage() {
   const confirmIncomeDelete = useCallback(async () => {
     if (!deleteIncomeTarget) return;
     try {
-      await incomeBudgetsApi.remove(deleteIncomeTarget.id!);
+      await deleteIncomeBudget(deleteIncomeTarget.id!);
       await refreshIncomeBudgets();
     } catch (err) {
       toast.error(String(err));
@@ -430,13 +464,57 @@ export default function BudgetsPage() {
             </Card>
           )}
 
-          <BudgetList
-            budgets={budgets}
-            getCategoryLabel={getCategoryLabel}
-            getCycleLabel={getCycleLabel}
-            onEdit={openExpenseEdit}
-            onDelete={handleExpenseDelete}
-          />
+          {/* 视图切换：平铺 / 按周期分组 / 按分类分组 */}
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-muted-foreground">分组查看：</span>
+            <Tabs value={viewMode} onValueChange={(v) => setViewMode(v as any)} className="w-auto">
+              <TabsList>
+                <TabsTrigger value="flat">全部</TabsTrigger>
+                <TabsTrigger value="byCycle">按周期</TabsTrigger>
+                <TabsTrigger value="byCategory">按分类</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+
+          {viewMode === 'flat' && renderBudgetList(budgets)}
+
+          {viewMode === 'byCycle' && (
+            <div className="space-y-6">
+              {cycleGroups.length === 0 && (
+                <Card><CardContent className="py-12 text-center text-muted-foreground text-sm">暂无预算</CardContent></Card>
+              )}
+              {cycleGroups.map(([cycleType, list]) => (
+                <div key={cycleType} className="space-y-2">
+                  <div className="flex items-baseline justify-between">
+                    <h2 className="text-sm font-semibold text-foreground">
+                      {getCycleLabel(cycleType)}
+                      <span className="text-xs font-normal text-muted-foreground ml-2">{list.length} 项</span>
+                    </h2>
+                  </div>
+                  {renderBudgetList(list)}
+                </div>
+              ))}
+            </div>
+          )}
+
+          {viewMode === 'byCategory' && (
+            <div className="space-y-6">
+              {categoryGroups.length === 0 && (
+                <Card><CardContent className="py-12 text-center text-muted-foreground text-sm">暂无预算</CardContent></Card>
+              )}
+              {categoryGroups.map(([category, list]) => (
+                <div key={category} className="space-y-2">
+                  <div className="flex items-baseline justify-between">
+                    <h2 className="text-sm font-semibold text-foreground">
+                      {getCategoryLabel(category)}
+                      <span className="text-xs font-normal text-muted-foreground ml-2">{list.length} 项</span>
+                    </h2>
+                  </div>
+                  {renderBudgetList(list)}
+                </div>
+              ))}
+            </div>
+          )}
         </TabsContent>
 
         {/* Income Budget Tab */}
