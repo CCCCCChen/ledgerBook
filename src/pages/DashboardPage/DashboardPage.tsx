@@ -1,4 +1,5 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { toast } from 'sonner';
 import ReactECharts from 'echarts-for-react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
@@ -8,7 +9,8 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Label } from '@/components/ui/label';
-import { AlertTriangle, TrendingUp, Wallet, CreditCard, PieChart, BarChart3, ChevronLeft, ChevronRight, CheckCircle2, AlertCircle, Pencil, ShieldAlert, X } from 'lucide-react';
+import { AlertTriangle, TrendingUp, Wallet, CreditCard, PieChart, BarChart3, ChevronLeft, ChevronRight, CheckCircle2, AlertCircle, Pencil, ShieldAlert, X, CalendarClock } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 import { CHART_COLORS } from '@/lib/chart-colors';
 import { DEFAULT_CATEGORIES, EXPENSE_ATTRIBUTE_LABELS } from '@/data/finance';
 import type { ITransaction, IAccount, ExpenseAttribute } from '@/types/finance';
@@ -17,12 +19,15 @@ import SummaryCards from './SummaryCards';
 import BudgetProgress from './BudgetProgress';
 import AlertPanel from './AlertPanel';
 import RecentTransactions from './RecentTransactions';
+import DashboardSkeleton from './DashboardSkeleton';
 import { formatLocalISODate, formatLocalISOYearMonth } from '@/lib/date';
 import { getEffectiveTransactionDate } from '@/lib/cashflow';
 import { getDefaultTimeRange, shiftTimeRange, getMonthLabel } from '@shared/TimeRange';
 import { aggregateExpenses, classifyPlanStatus } from '@shared/expense-aggregation';
 import type { PlanStatus } from '@shared/expense-aggregation';
 import type { TimeRange } from '@shared/TimeRange';
+import { normalizeBudgetToCurrentMonth } from '@shared/installment-utils';
+import { useKeyboardShortcuts } from '@/hooks/useKeyboardShortcuts';
 
 type StatsPeriod = 'month' | 'quarter' | 'halfyear' | 'year';
 const PERIOD_LABELS: Record<StatsPeriod, string> = {
@@ -35,6 +40,8 @@ const PERIOD_LABELS: Record<StatsPeriod, string> = {
 type TimelineMode = 'expense' | 'cashflow';
 
 export default function DashboardPage() {
+  const navigate = useNavigate();
+  const [loading, setLoading] = useState(true);
   const [transactions, setTransactions] = useState<ITransaction[]>([]);
   const [budgets, setBudgets] = useState<any[]>([]);
   const [accounts, setAccounts] = useState<IAccount[]>([]);
@@ -44,6 +51,33 @@ export default function DashboardPage() {
   const [rangeTo, setRangeTo] = useState<string>('');
   const [timeRange, setTimeRange] = useState<TimeRange>(getDefaultTimeRange());
   const [planStatusFilter, setPlanStatusFilter] = useState<PlanStatus | null>(null);
+  const [trendDimension, setTrendDimension] = useState<'amount' | 'proportion' | 'deviation'>('amount');
+  const [zoomMonths, setZoomMonths] = useState<Set<string> | null>(null);
+
+  // 键盘快捷键
+  useKeyboardShortcuts({
+    onShiftMonth: (dir) => setTimeRange((prev) => shiftTimeRange(prev, dir as 1 | -1)),
+    onSearch: () => navigate('/'),
+    timeRange,
+  });
+
+  // 撤销 Toast：时间范围切换后 5s 内可撤销
+  const prevTimeRangeRef = useRef<TimeRange>(timeRange);
+  const undoTimeRange = useCallback((next: TimeRange) => {
+    const prev = timeRange;
+    prevTimeRangeRef.current = prev;
+    setTimeRange(next);
+    toast(`${getMonthLabel(next)}`, {
+      description: '按撤销可返回上一时间范围',
+      duration: 5000,
+      action: {
+        label: '撤销',
+        onClick: () => {
+          setTimeRange(prevTimeRangeRef.current);
+        },
+      },
+    });
+  }, [timeRange]);
 
   // 同步 timeRange 到日期范围
   useEffect(() => {
@@ -62,6 +96,7 @@ export default function DashboardPage() {
       setTransactions(txns);
       setBudgets(bdgs);
       setAccounts(accts);
+      setLoading(false);
     };
     loadData();
   }, []);
@@ -147,6 +182,15 @@ export default function DashboardPage() {
       return transactionPlanStatuses.get(t.id!) === planStatusFilter;
     });
   }, [filteredTransactions, transactionPlanStatuses, planStatusFilter]);
+
+  // zoomMonths 联动过滤最近交易
+  const trendFilteredTransactions = useMemo(() => {
+    if (!zoomMonths) return statusFilteredTransactions;
+    return statusFilteredTransactions.filter((txn) => {
+      const m = txn.date.substring(0, 7); // YYYY-MM
+      return zoomMonths.has(m);
+    });
+  }, [statusFilteredTransactions, zoomMonths]);
 
   // ==========================================
   // 1. 财务状态概览
@@ -357,7 +401,7 @@ export default function DashboardPage() {
   // 4. 预警中心
   // ==========================================
   const alerts = useMemo(() => {
-    const items: { title: string; description: string; severity: 'high' | 'medium' | 'low' }[] = [];
+    const items: { title: string; description: string; severity: 'high' | 'medium' | 'low'; target?: string }[] = [];
 
     // 1. 负债压力
     if (financialOverview.debtPressure > 30) {
@@ -365,12 +409,14 @@ export default function DashboardPage() {
         title: '信用卡还款压力大',
         description: `下月还款预计占收入 ${financialOverview.debtPressure}%`,
         severity: 'high',
+        target: '/credit-debt',
       });
     } else if (financialOverview.debtPressure > 20) {
       items.push({
         title: '信用卡还款压力上升',
         description: `下月还款预计占收入 ${financialOverview.debtPressure}%`,
         severity: 'medium',
+        target: '/credit-debt',
       });
     }
 
@@ -380,6 +426,7 @@ export default function DashboardPage() {
         title: `${item.category} 超预算`,
         description: `已花费 ¥${item.actualAmount.toFixed(0)} / 预算 ¥${item.budgetAmount.toFixed(0)}`,
         severity: 'medium',
+        target: '/budgets',
       });
     });
 
@@ -393,6 +440,7 @@ export default function DashboardPage() {
           title: '大额支出提醒',
           description: `${txn.date} 在 ${txn.category} 花费 ¥${Math.abs(txn.amount).toFixed(0)}`,
           severity: 'medium',
+          target: '/',
         });
       });
     }
@@ -412,8 +460,19 @@ export default function DashboardPage() {
   // ==========================================
   // 5. 财务趋势图
   // ==========================================
+  const trendMonthLabels = useMemo(() => {
+    const months: Date[] = [];
+    const monthCounts: Record<StatsPeriod, number> = { month: 1, quarter: 3, halfyear: 6, year: 12 };
+    const count = monthCounts[selectedPeriod] || 6;
+    const anchorEnd = selectedPeriod === 'month' ? new Date(timeRange.end) : new Date();
+    for (let i = count - 1; i >= 0; i--) {
+      months.push(new Date(anchorEnd.getFullYear(), anchorEnd.getMonth() - i, 1));
+    }
+    return months.map((m) => formatLocalISOYearMonth(m));
+  }, [selectedPeriod, timeRange]);
+
   const trendChartOption = useMemo(() => {
-    const months = [];
+    const months: Date[] = [];
     const monthCounts: Record<StatsPeriod, number> = { month: 1, quarter: 3, halfyear: 6, year: 12 };
     const count = monthCounts[selectedPeriod] || 6;
     const anchorEnd = selectedPeriod === 'month' ? new Date(timeRange.end) : new Date();
@@ -424,6 +483,8 @@ export default function DashboardPage() {
     const incomeData: number[] = [];
     const expenseData: number[] = [];
     const savingData: number[] = [];
+    const deviationData: number[] = [];
+    const budgetData: number[] = [];
     const monthlyTransactions: { monthKey: string; txns: ITransaction[] }[] = [];
 
     months.forEach((month) => {
@@ -437,64 +498,150 @@ export default function DashboardPage() {
       expenseData.push(Math.round(expense));
       savingData.push(Math.round(income - expense));
 
+      // 偏离维度数据
+      const midMonth = new Date(month.getFullYear(), month.getMonth(), 15);
+      const totalBudget = budgets.reduce((sum, b) => {
+        const norm = normalizeBudgetToCurrentMonth(b, { refDate: midMonth });
+        return sum + (norm?.normalizedBudgetAmount ?? 0);
+      }, 0);
+      budgetData.push(Math.round(totalBudget));
+      deviationData.push(Math.round(expense - totalBudget));
+
       monthlyTransactions.push({
         monthKey: formatLocalISOYearMonth(month),
         txns: txnsInMonth,
       });
     });
 
+    // 截至今日竖线标记：本月非月末时在当前月位置添加标记
+    const today = new Date();
+    const isLastDayOfMonth = today.getDate() === new Date(today.getFullYear(), today.getMonth() + 1, 0).getDate();
+    const todayMonthLabel = formatLocalISOYearMonth(today);
+    const todayIndex = trendMonthLabels.indexOf(todayMonthLabel);
+    const todayMarkLine = todayIndex >= 0 && !isLastDayOfMonth
+      ? {
+          silent: true,
+          symbol: 'none',
+          lineStyle: { type: 'dashed' as const, color: '#faad14', width: 1.5 },
+          data: [{ xAxis: todayMonthLabel, label: { formatter: '截至今日', fontSize: 11 } }],
+        }
+      : undefined;
+
+    // ---- 金额维度 ----
+    if (trendDimension === 'amount') {
+      return {
+        animationDurationUpdate: 500,
+        tooltip: {
+          trigger: 'axis',
+          formatter: (params: any) => {
+            if (!params || params.length === 0) return '';
+            const monthKey = params[0].axisValue;
+            const monthData = monthlyTransactions.find(m => m.monthKey === monthKey);
+            let result = `<strong>${monthKey}</strong><br/>`;
+            params.forEach((param: any) => {
+              result += `${param.marker} ${param.seriesName}: ¥${param.value.toLocaleString()}<br/>`;
+            });
+            if (monthData && monthData.txns.length > 0) {
+              result += `<br/><strong>详细记录（${monthData.txns.length}笔）：</strong><br/>`;
+              const recentTxns = monthData.txns.slice(-5).reverse();
+              recentTxns.forEach((txn) => {
+                const sign = txn.amount > 0 ? '+' : '';
+                const color = txn.amount > 0 ? 'color: #52c41a' : 'color: #ff4d4f';
+                result += `<span style="${color}">${sign}¥${Math.abs(txn.amount).toLocaleString()}</span> - ${txn.category}<br/>`;
+              });
+              if (monthData.txns.length > 5) {
+                result += `...还有 ${monthData.txns.length - 5} 笔记录`;
+              }
+            }
+            return result;
+          },
+          enterable: true,
+          hideDelay: 1000,
+        },
+        legend: { data: ['收入', '支出', '储蓄'], bottom: 0 },
+        grid: { left: '3%', right: '4%', bottom: '15%', top: '10%', containLabel: true },
+        xAxis: { type: 'category', data: trendMonthLabels, ...(todayMarkLine ? { markLine: todayMarkLine } : {}) },
+        yAxis: { type: 'value', name: '金额' },
+        series: [
+          { name: '收入', type: 'line', data: incomeData, smooth: true, itemStyle: { color: CHART_COLORS[0] } },
+          { name: '支出', type: 'line', data: expenseData, smooth: true, itemStyle: { color: '#E54848' } },
+          { name: '储蓄', type: 'line', data: savingData, smooth: true, itemStyle: { color: CHART_COLORS[1] } },
+        ],
+        dataZoom: [
+          { type: 'slider', start: 0, end: 100, height: 20, bottom: 0 },
+          { type: 'inside' },
+        ],
+      };
+    }
+
+    // ---- 占比维度 ----
+    if (trendDimension === 'proportion') {
+      const expenseRateData = incomeData.map((inc, i) => inc > 0 ? Math.round(expenseData[i] / inc * 100) : 0);
+      const savingRateData = incomeData.map((inc, i) => inc > 0 ? Math.round(savingData[i] / inc * 100) : 0);
+      return {
+        animationDurationUpdate: 500,
+        tooltip: {
+          trigger: 'axis',
+          formatter: (params: any) => {
+            if (!params || params.length === 0) return '';
+            let result = `<strong>${params[0].axisValue}</strong><br/>`;
+            params.forEach((param: any) => {
+              result += `${param.marker} ${param.seriesName}: ${param.value}%<br/>`;
+            });
+            return result;
+          },
+        },
+        legend: { data: ['支出率', '储蓄率'], bottom: 0 },
+        grid: { left: '3%', right: '4%', bottom: '15%', top: '10%', containLabel: true },
+        xAxis: { type: 'category', data: trendMonthLabels, ...(todayMarkLine ? { markLine: todayMarkLine } : {}) },
+        yAxis: { type: 'value', name: '占比 (%)', max: 100, axisLabel: { formatter: '{value}%' } },
+        series: [
+          { name: '支出率', type: 'line', data: expenseRateData, smooth: true, itemStyle: { color: '#E54848' }, areaStyle: { opacity: 0.08, color: '#E54848' } },
+          { name: '储蓄率', type: 'line', data: savingRateData, smooth: true, itemStyle: { color: CHART_COLORS[0] }, areaStyle: { opacity: 0.08, color: CHART_COLORS[0] } },
+        ],
+        dataZoom: [
+          { type: 'slider', start: 0, end: 100, height: 20, bottom: 0 },
+          { type: 'inside' },
+        ],
+      };
+    }
+
+    // ---- 偏离维度 ----
     return {
       tooltip: {
         trigger: 'axis',
         formatter: (params: any) => {
           if (!params || params.length === 0) return '';
-
-          const monthKey = params[0].axisValue;
-          const monthData = monthlyTransactions.find(m => m.monthKey === monthKey);
-
-          let result = `<strong>${monthKey}</strong><br/>`;
-
-          params.forEach((param: any) => {
-            result += `${param.marker} ${param.seriesName}: ¥${param.value.toLocaleString()}<br/>`;
-          });
-
-          if (monthData && monthData.txns.length > 0) {
-            result += `<br/><strong>详细记录（${monthData.txns.length}笔）：</strong><br/>`;
-
-            const recentTxns = monthData.txns.slice(-5).reverse();
-            recentTxns.forEach((txn, idx) => {
-              const sign = txn.amount > 0 ? '+' : '';
-              const color = txn.amount > 0 ? 'color: #52c41a' : 'color: #ff4d4f';
-              result += `<span style="${color}">${sign}¥${Math.abs(txn.amount).toLocaleString()}</span> - ${txn.category}<br/>`;
-            });
-
-            if (monthData.txns.length > 5) {
-              result += `...还有 ${monthData.txns.length - 5} 笔记录`;
-            }
-          }
-
+          const idx = params[0].dataIndex;
+          const actual = expenseData[idx];
+          const budget = budgetData[idx];
+          const diff = actual - budget;
+          const color = diff > 0 ? '#E54848' : '#52c41a';
+          const sign = diff > 0 ? '超支' : '结余';
+          let result = `<strong>${trendMonthLabels[idx]}</strong><br/>`;
+          result += `实际支出: ¥${actual.toLocaleString()}<br/>`;
+          result += `预算: ¥${budget.toLocaleString()}<br/>`;
+          result += `<span style="color:${color};font-weight:bold">${sign} ¥${Math.abs(diff).toLocaleString()}</span>`;
           return result;
         },
-        enterable: true,
-        hideDelay: 1000,
       },
-      legend: { data: ['收入', '支出', '储蓄'], bottom: 0 },
+      legend: { data: ['偏离'], bottom: 0 },
       grid: { left: '3%', right: '4%', bottom: '15%', top: '10%', containLabel: true },
-      xAxis: {
-        type: 'category',
-        data: months.map((m) => formatLocalISOYearMonth(m)),
-      },
-      yAxis: {
-        type: 'value',
-        name: '金额',
-      },
+      xAxis: { type: 'category', data: trendMonthLabels, ...(todayMarkLine ? { markLine: todayMarkLine } : {}) },
+      yAxis: { type: 'value', name: '偏离 (¥)', axisLabel: { formatter: (v: number) => (v >= 0 ? '+' : '') + v.toLocaleString() } },
       series: [
-        { name: '收入', type: 'line', data: incomeData, smooth: true, itemStyle: { color: CHART_COLORS[0] } },
-        { name: '支出', type: 'line', data: expenseData, smooth: true, itemStyle: { color: '#E54848' } },
-        { name: '储蓄', type: 'line', data: savingData, smooth: true, itemStyle: { color: CHART_COLORS[1] } },
+        {
+          name: '偏离',
+          type: 'bar',
+          data: deviationData,
+        },
+      ],
+      dataZoom: [
+        { type: 'slider', start: 0, end: 100, height: 20, bottom: 0 },
+        { type: 'inside' },
       ],
     };
-  }, [transactions, selectedPeriod, timeRange]);
+  }, [transactions, selectedPeriod, timeRange, trendDimension, budgets, trendMonthLabels]);
 
   // ==========================================
   // 6. 分类支出分布（饼图）
@@ -685,6 +832,8 @@ export default function DashboardPage() {
   // Render
   // ==========================================
 
+  if (loading) return <DashboardSkeleton />;
+
   return (
     <div className="space-y-6">
       {/* ① 标题行 */}
@@ -695,14 +844,14 @@ export default function DashboardPage() {
             {selectedPeriod === 'month' && (
               <>
                 <Button variant="ghost" size="icon" className="h-8 w-8 ml-2"
-                  onClick={() => setTimeRange(prev => shiftTimeRange(prev, -1))}>
+                  onClick={() => undoTimeRange(shiftTimeRange(timeRange, -1))}>
                   <ChevronLeft className="h-4 w-4" />
                 </Button>
                 <span className="text-sm font-medium min-w-[80px] text-center tabular-nums">
                   {getMonthLabel(timeRange)}
                 </span>
                 <Button variant="ghost" size="icon" className="h-8 w-8"
-                  onClick={() => setTimeRange(prev => shiftTimeRange(prev, 1))}>
+                  onClick={() => undoTimeRange(shiftTimeRange(timeRange, 1))}>
                   <ChevronRight className="h-4 w-4" />
                 </Button>
               </>
@@ -717,6 +866,15 @@ export default function DashboardPage() {
               ))}
             </TabsList>
           </Tabs>
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0 gap-1.5"
+            onClick={() => navigate(`/forecast?from=${rangeFrom}&to=${rangeTo}`)}
+          >
+            <CalendarClock className="h-4 w-4" />
+            现金流预测
+          </Button>
         </div>
 
         {/* ② 日期范围 + 统计口径 */}
@@ -989,10 +1147,43 @@ export default function DashboardPage() {
 
         {/* ⑨ 财务趋势 */}
         <Card>
-          <CardHeader><CardTitle className="text-base">财务趋势</CardTitle></CardHeader>
+          <CardHeader>
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <CardTitle className="text-base">财务趋势</CardTitle>
+              <div className="flex gap-1 bg-muted rounded-md p-0.5">
+                {(['amount', 'proportion', 'deviation'] as const).map((dim) => (
+                  <button key={dim} type="button"
+                    className={`px-3 py-1 text-xs rounded-sm transition-colors ${trendDimension === dim ? 'bg-background shadow-sm font-medium' : 'text-muted-foreground hover:text-foreground'}`}
+                    onClick={() => { setTrendDimension(dim); setZoomMonths(null); }}>
+                    {{ amount: '金额', proportion: '占比', deviation: '偏离' }[dim]}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </CardHeader>
           <CardContent>
             {trendChartOption ? (
-              <ReactECharts option={trendChartOption} style={{ height: 320 }} />
+              <ReactECharts
+                key={trendDimension}
+                option={trendChartOption}
+                style={{ height: 320 }}
+                onEvents={{
+                  dataZoom: (params: any) => {
+                    const start = params.start || 0;
+                    const end = params.end || 100;
+                    if (start === 0 && end === 100) {
+                      setZoomMonths(null);
+                      return;
+                    }
+                    const total = trendMonthLabels.length;
+                    const si = Math.floor(start / 100 * total);
+                    const ei = Math.min(total - 1, Math.ceil(end / 100 * total) - 1);
+                    const visible = new Set<string>();
+                    for (let i = si; i <= ei; i++) visible.add(trendMonthLabels[i]);
+                    setZoomMonths(visible.size === total ? null : visible);
+                  },
+                }}
+              />
             ) : (
               <p className="text-muted-foreground text-sm text-center py-8">暂无数据</p>
             )}
@@ -1000,7 +1191,7 @@ export default function DashboardPage() {
         </Card>
 
         {/* ⑩ 最近交易 */}
-        <RecentTransactions transactions={statusFilteredTransactions} accounts={accounts} />
+        <RecentTransactions transactions={trendFilteredTransactions} accounts={accounts} />
     </div>
   );
 }

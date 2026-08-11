@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useCallback, useEffect, useMemo, useState, useRef, type FormEvent } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Plus, Pencil, Trash2, TrendingUp, TrendingDown, DollarSign, ArrowUpRight, ArrowDownRight, Target, Calendar, Edit2, ArrowDown } from 'lucide-react';
 import { toast } from 'sonner';
 import ReactECharts from 'echarts-for-react';
@@ -80,6 +80,8 @@ interface ImpactResult {
 
 export default function ForecastPage() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const chartRef = useRef<any>(null);
   const today = new Date();
   const todayISO = formatLocalISODate(today);
   const monthStartISO = formatLocalISODate(new Date(today.getFullYear(), today.getMonth(), 1));
@@ -91,8 +93,8 @@ export default function ForecastPage() {
   const [plannedExpenses, setPlannedExpenses] = useState<IPlannedExpense[]>([]);
   const [savingsGoal, setSavingsGoal] = useState<SavingsGoal | null>(null);
   const [monthlyProjections, setMonthlyProjections] = useState<IIncomeBudgetProjection[]>([]);
-  const [rangeFrom, setRangeFrom] = useState(monthStartISO);
-  const [rangeTo, setRangeTo] = useState(monthEndISO);
+  const [rangeFrom, setRangeFrom] = useState(searchParams.get('from') || monthStartISO);
+  const [rangeTo, setRangeTo] = useState(searchParams.get('to') || monthEndISO);
   const [includeBudgetSettlement, setIncludeBudgetSettlement] = useState(true);
   const [includePlannedExpenses, setIncludePlannedExpenses] = useState(true);
   const [startBalance, setStartBalance] = useState('0');
@@ -112,6 +114,9 @@ export default function ForecastPage() {
   const [dialogOpen, setDialogOpen] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<IPlannedExpense | null>(null);
+  // FA5: 行内编辑状态
+  const [inlineEdit, setInlineEdit] = useState<{ id: string; field: 'amount' | 'date' } | null>(null);
+  const [inlineValue, setInlineValue] = useState('');
   const [form, setForm] = useState<PlannedExpenseFormData>({
     name: '',
     amount: '',
@@ -593,28 +598,41 @@ export default function ForecastPage() {
   // Impact & Goal handlers
   // ============================================================
 
-  const handleRunImpact = useCallback(async () => {
-    if (!impactForm.amount || !impactForm.date) return;
-    setImpactLoading(true);
-    try {
-      const res = await forecastApi.impact({
-        rangeFrom: new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10),
-        rangeTo: new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10),
-        startBalance: Number(startBalance || 0),
-        includePlannedExpenses,
-        includeBudgetSettlement,
-        simulatedExpense: {
-          amount: Number(impactForm.amount),
-          date: impactForm.date,
-        },
-      });
-      setImpactResult(res.data);
-    } catch {
-      toast.error('评估失败');
-    } finally {
-      setImpactLoading(false);
+  // FA7: Debounce 300ms 自动评估
+  const impactTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    if (!impactForm.amount || !impactForm.date) {
+      setImpactResult(null);
+      return;
     }
-  }, [impactForm, startBalance, safetyLine, includePlannedExpenses, includeBudgetSettlement]);
+    clearTimeout(impactTimerRef.current);
+    impactTimerRef.current = setTimeout(async () => {
+      setImpactLoading(true);
+      try {
+        const res = await forecastApi.impact({
+          rangeFrom: new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10),
+          rangeTo: new Date(Date.now() + 90 * 86400000).toISOString().slice(0, 10),
+          startBalance: Number(startBalance || 0),
+          includePlannedExpenses,
+          includeBudgetSettlement,
+          simulatedExpense: {
+            amount: Number(impactForm.amount),
+            date: impactForm.date,
+          },
+        });
+        setImpactResult(res.data);
+      } catch {
+        // 静默失败，用户仍在输入中
+      } finally {
+        setImpactLoading(false);
+      }
+    }, 300);
+    return () => clearTimeout(impactTimerRef.current);
+  }, [impactForm.amount, impactForm.date, startBalance, includePlannedExpenses, includeBudgetSettlement]);
+
+  const handleRunImpact = useCallback(async () => {
+    // noop: 已由 debounce 自动处理
+  }, []);
 
   const handleSaveGoal = useCallback(() => {
     const amt = Number(goalForm.targetAmount);
@@ -689,6 +707,29 @@ export default function ForecastPage() {
     }
   }, [deleteTarget, refreshAll]);
 
+  // FA5: 行内编辑保存
+  const handleInlineSave = useCallback(async () => {
+    if (!inlineEdit || !inlineValue) { setInlineEdit(null); return; }
+    const item = plannedExpenses.find(p => p.id === inlineEdit.id);
+    if (!item) { setInlineEdit(null); return; }
+    const payload = { name: item.name, amount: item.amount, plannedDate: item.plannedDate, category: item.category, note: item.note || '' };
+    if (inlineEdit.field === 'amount') {
+      const v = Number(inlineValue);
+      if (isNaN(v) || v <= 0) { setInlineEdit(null); return; }
+      payload.amount = v;
+    } else {
+      payload.plannedDate = inlineValue;
+    }
+    try {
+      await updatePlannedExpense(inlineEdit.id, payload);
+      await refreshAll();
+    } catch (err) {
+      toast.error(String(err));
+    } finally {
+      setInlineEdit(null);
+    }
+  }, [inlineEdit, inlineValue, plannedExpenses, refreshAll]);
+
   // Computed data for sub-components
   const chartPoints = useMemo(() => 
     balanceSeries.dates.map((d, i) => ({ date: d, balance: balanceSeries.balances[i] })),
@@ -721,23 +762,35 @@ export default function ForecastPage() {
         <Card>
           <CardContent className="p-4">
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-center">
-              <div>
+              <div
+                className="cursor-pointer hover:bg-accent rounded-md p-1 -m-1 transition-colors"
+                title="定位到起始余额"
+                onClick={() => { const inst = chartRef.current?.getEchartsInstance(); if (inst) { inst.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: 0 }); } }}>
                 <p className="text-xs text-muted-foreground">起始余额</p>
                 <p className="text-lg font-bold tabular-nums">¥{Number(startBalance || 0).toLocaleString()}</p>
               </div>
-              <div>
+              <div
+                className="cursor-pointer hover:bg-accent rounded-md p-1 -m-1 transition-colors"
+                title="定位到最高点"
+                onClick={() => { const inst = chartRef.current?.getEchartsInstance(); if (inst) { const idx = balanceSeries.balances.indexOf(Math.max(...balanceSeries.balances)); inst.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: idx >= 0 ? idx : 0 }); } }}>
                 <p className="text-xs text-muted-foreground">最高余额</p>
                 <p className="text-lg font-bold tabular-nums text-green-600">
                   ¥{Math.round(Math.max(...balanceSeries.balances)).toLocaleString()}
                 </p>
               </div>
-              <div>
+              <div
+                className="cursor-pointer hover:bg-accent rounded-md p-1 -m-1 transition-colors"
+                title="定位到最低点"
+                onClick={() => { const inst = chartRef.current?.getEchartsInstance(); if (inst) { const idx = balanceSeries.balances.indexOf(balanceSeries.minBalance); inst.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: idx >= 0 ? idx : 0 }); } }}>
                 <p className="text-xs text-muted-foreground">最低余额</p>
                 <p className="text-lg font-bold tabular-nums text-red-600">
                   ¥{Math.round(balanceSeries.minBalance).toLocaleString()}
                 </p>
               </div>
-              <div>
+              <div
+                className="cursor-pointer hover:bg-accent rounded-md p-1 -m-1 transition-colors"
+                title="定位到期末"
+                onClick={() => { const inst = chartRef.current?.getEchartsInstance(); if (inst) { inst.dispatchAction({ type: 'showTip', seriesIndex: 0, dataIndex: balanceSeries.balances.length - 1 }); } }}>
                 <p className="text-xs text-muted-foreground">期末余额</p>
                 <p className="text-lg font-bold tabular-nums">¥{Math.round(balanceSeries.endBalance).toLocaleString()}</p>
               </div>
@@ -775,6 +828,7 @@ export default function ForecastPage() {
           <CardContent>
             {hasSimulationData && chartPoints.length > 0 ? (
               <ReactECharts
+                ref={chartRef}
                 option={(() => {
                   const sVal = Number(safetyLine || 0);
                   return {
@@ -816,6 +870,14 @@ export default function ForecastPage() {
                   };
                 })()}
                 style={{ height: 320 }}
+                onChartReady={(instance: any) => {
+                  instance.getZr().off('click');
+                  instance.getZr().on('click', (params: any) => {
+                    if (params.target) return; // ignore clicks on data points/labels
+                    const yVal = instance.convertFromPixel({ yAxisIndex: 0 }, [0, params.offsetY])?.[1];
+                    if (typeof yVal === 'number') setSafetyLine(String(Math.round(yVal)));
+                  });
+                }}
               />
             ) : (
               <p className="text-muted-foreground text-sm text-center py-8">请先运行模拟以查看结果</p>
@@ -856,7 +918,25 @@ export default function ForecastPage() {
               </div>
               <div className="grid gap-1.5">
                 <Label htmlFor="sim-safety">安全线</Label>
-                <Input id="sim-safety" type="number" step="0.01" value={safetyLine} onChange={(e) => setSafetyLine(e.target.value)} />
+                <div className="flex items-center gap-2">
+                  <input
+                    type="range"
+                    className="flex-1 h-1.5 accent-primary"
+                    min="0"
+                    max={Math.max(Number(startBalance || 0) * 2, 50000)}
+                    step="100"
+                    value={Math.min(Number(safetyLine || 0), Math.max(Number(startBalance || 0) * 2, 50000))}
+                    onChange={(e) => setSafetyLine(e.target.value)}
+                  />
+                  <Input
+                    id="sim-safety"
+                    type="number"
+                    step="0.01"
+                    className="w-28 shrink-0"
+                    value={safetyLine}
+                    onChange={(e) => setSafetyLine(e.target.value)}
+                  />
+                </div>
               </div>
               <div className="flex items-center gap-2 pb-1">
                 <Label htmlFor="forecast-planned">考虑财务事件</Label>
@@ -891,12 +971,36 @@ export default function ForecastPage() {
                 <Label htmlFor="impact-amount">消费金额</Label>
                 <Input id="impact-amount" type="number" step="0.01" value={impactForm.amount} onChange={(e) => setImpactForm({ ...impactForm, amount: e.target.value })} placeholder="0.00" />
               </div>
-              <Button onClick={handleRunImpact} disabled={impactLoading}>
-                {impactLoading ? '评估中...' : '评估影响'}
-              </Button>
+              {impactLoading && <span className="text-xs text-muted-foreground self-end pb-2">评估中...</span>}
+              {impactResult && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="self-end"
+                  onClick={async () => {
+                    if (!impactForm.amount || !impactForm.date) return;
+                    try {
+                      await createPlannedExpense({
+                        name: `模拟消费 ${impactForm.date}`,
+                        amount: Number(impactForm.amount),
+                        plannedDate: impactForm.date,
+                        accountId: '',
+                        category: '其他' as TransactionCategory,
+                        note: '',
+                      });
+                      await refreshAll();
+                      toast.success('已加入计划支出');
+                    } catch (err) {
+                      toast.error(String(err));
+                    }
+                  }}
+                >
+                  <Plus className="size-3 mr-1" />加入计划
+                </Button>
+              )}
             </div>
             {impactResult && (
-              <div className="grid grid-cols-3 gap-3 mt-3">
+              <div className="grid grid-cols-4 gap-3 mt-3 animate-in fade-in duration-300">
                 <div className="rounded-lg border p-3">
                   <p className="text-xs text-muted-foreground">基线最低余额</p>
                   <p className="text-lg font-semibold tabular-nums">¥{Math.round(impactResult.baseline.minBalance).toLocaleString()}</p>
@@ -909,8 +1013,14 @@ export default function ForecastPage() {
                 </div>
                 <div className="rounded-lg border p-3">
                   <p className="text-xs text-muted-foreground">余额差值</p>
-                  <p className="text-lg font-semibold tabular-nums text-destructive">
-                    -¥{Math.round(Math.abs(impactResult.delta.minBalance)).toLocaleString()}
+                  <p className={`text-lg font-semibold tabular-nums ${impactResult.delta.minBalance < 0 ? 'text-destructive' : 'text-emerald-600'}`}>
+                    {impactResult.delta.minBalance >= 0 ? '+' : '-'}¥{Math.round(Math.abs(impactResult.delta.minBalance)).toLocaleString()}
+                  </p>
+                </div>
+                <div className="rounded-lg border p-3">
+                  <p className="text-xs text-muted-foreground">期末余额差值</p>
+                  <p className={`text-lg font-semibold tabular-nums ${impactResult.delta.endBalance < 0 ? 'text-destructive' : 'text-emerald-600'}`}>
+                    {impactResult.delta.endBalance >= 0 ? '+' : '-'}¥{Math.round(Math.abs(impactResult.delta.endBalance)).toLocaleString()}
                   </p>
                 </div>
               </div>
@@ -931,12 +1041,32 @@ export default function ForecastPage() {
           </CardHeader>
           <CardContent>
             {savingsGoal ? (
-              <div className="flex items-center justify-between">
-                <div>
-                  <p className="text-lg font-semibold tabular-nums">¥{savingsGoal.targetAmount.toLocaleString()}</p>
-                  <p className="text-sm text-muted-foreground">截止 {savingsGoal.deadline}</p>
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <p className="text-lg font-semibold tabular-nums">¥{savingsGoal.targetAmount.toLocaleString()}</p>
+                    <p className="text-sm text-muted-foreground">截止 {savingsGoal.deadline}</p>
+                  </div>
+                  <Button variant="ghost" size="sm" className="text-destructive" onClick={handleDeleteGoal}>删除</Button>
                 </div>
-                <Button variant="ghost" size="sm" className="text-destructive" onClick={handleDeleteGoal}>删除</Button>
+                {goalAnalysis && (
+                  <div
+                    className="cursor-pointer group"
+                    title="点击调整储蓄目标"
+                    onClick={() => { setGoalForm({ targetAmount: String(savingsGoal.targetAmount), deadline: savingsGoal.deadline }); setGoalFormOpen(true); }}
+                  >
+                    <div className="flex justify-between text-xs text-muted-foreground mb-1">
+                      <span>进度 {goalAnalysis.progress}%</span>
+                      {goalAnalysis.gap > 0 && <span>还差 ¥{goalAnalysis.gap.toLocaleString()}（每月需存 ¥{goalAnalysis.monthlyExtra.toLocaleString()}）</span>}
+                    </div>
+                    <div className="h-2.5 w-full rounded-full bg-muted overflow-hidden group-hover:opacity-80 transition-opacity">
+                      <div
+                        className={`h-full rounded-full transition-all duration-500 ${goalAnalysis.progress >= 100 ? 'bg-emerald-500' : 'bg-primary'}`}
+                        style={{ width: `${Math.max(2, goalAnalysis.progress)}%` }}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               <p className="text-sm text-muted-foreground">尚未设置储蓄目标</p>
@@ -968,7 +1098,22 @@ export default function ForecastPage() {
                     <div className="min-w-0">
                       <p className="text-sm font-medium truncate">{item.name}</p>
                       <div className="flex items-center gap-2 text-xs text-muted-foreground mt-0.5">
-                        <span>{item.plannedDate}</span>
+                        {inlineEdit?.id === item.id && inlineEdit.field === 'date' ? (
+                          <input
+                            type="date"
+                            className="w-28 px-1 py-0.5 text-xs border rounded"
+                            value={inlineValue}
+                            onChange={(e) => setInlineValue(e.target.value)}
+                            onBlur={handleInlineSave}
+                            onKeyDown={(e) => { if (e.key === 'Enter') handleInlineSave(); if (e.key === 'Escape') setInlineEdit(null); }}
+                            autoFocus
+                          />
+                        ) : (
+                          <span
+                            className="cursor-pointer hover:text-foreground hover:underline"
+                            onClick={() => { setInlineEdit({ id: item.id, field: 'date' }); setInlineValue(item.plannedDate); }}
+                          >{item.plannedDate}</span>
+                        )}
                         <Badge variant="outline" className="text-[10px]">{item.category}</Badge>
                         <span>{accounts.find(a => a.id === item.accountId)?.name || ''}</span>
                       </div>
@@ -983,9 +1128,25 @@ export default function ForecastPage() {
                           ¥{Math.round(breakAmount).toLocaleString()}
                         </span>
                       )}
-                      <span className="text-sm font-semibold tabular-nums text-destructive">
-                        -¥{Math.abs(item.amount).toLocaleString()}
-                      </span>
+                      {inlineEdit?.id === item.id && inlineEdit.field === 'amount' ? (
+                        <input
+                          type="number"
+                          step="0.01"
+                          className="w-24 px-1.5 py-0.5 text-sm border rounded text-right tabular-nums"
+                          value={inlineValue}
+                          onChange={(e) => setInlineValue(e.target.value)}
+                          onBlur={handleInlineSave}
+                          onKeyDown={(e) => { if (e.key === 'Enter') handleInlineSave(); if (e.key === 'Escape') setInlineEdit(null); }}
+                          autoFocus
+                        />
+                      ) : (
+                        <span
+                          className="text-sm font-semibold tabular-nums text-destructive cursor-pointer hover:underline"
+                          onClick={() => { setInlineEdit({ id: item.id, field: 'amount' }); setInlineValue(String(item.amount)); }}
+                        >
+                          -¥{Math.abs(item.amount).toLocaleString()}
+                        </span>
+                      )}
                       <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => openPlannedDialog(item.id)}>
                         <Pencil className="size-3" />
                       </Button>
