@@ -5,9 +5,10 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Label } from '@/components/ui/label';
-import { AlertTriangle, TrendingUp, Wallet, CreditCard, PieChart, BarChart3 } from 'lucide-react';
+import { AlertTriangle, TrendingUp, Wallet, CreditCard, PieChart, BarChart3, ChevronLeft, ChevronRight, CheckCircle2, AlertCircle, Pencil, ShieldAlert, X } from 'lucide-react';
 import { CHART_COLORS } from '@/lib/chart-colors';
 import { DEFAULT_CATEGORIES, EXPENSE_ATTRIBUTE_LABELS } from '@/data/finance';
 import type { ITransaction, IAccount, ExpenseAttribute } from '@/types/finance';
@@ -18,7 +19,10 @@ import AlertPanel from './AlertPanel';
 import RecentTransactions from './RecentTransactions';
 import { formatLocalISODate, formatLocalISOYearMonth } from '@/lib/date';
 import { getEffectiveTransactionDate } from '@/lib/cashflow';
-import { normalizeBudgetToCurrentMonth } from '@shared/installment-utils';
+import { getDefaultTimeRange, shiftTimeRange, getMonthLabel } from '@shared/TimeRange';
+import { aggregateExpenses, classifyPlanStatus } from '@shared/expense-aggregation';
+import type { PlanStatus } from '@shared/expense-aggregation';
+import type { TimeRange } from '@shared/TimeRange';
 
 type StatsPeriod = 'month' | 'quarter' | 'halfyear' | 'year';
 const PERIOD_LABELS: Record<StatsPeriod, string> = {
@@ -38,15 +42,14 @@ export default function DashboardPage() {
   const [selectedPeriod, setSelectedPeriod] = useState<StatsPeriod>('month');
   const [rangeFrom, setRangeFrom] = useState<string>('');
   const [rangeTo, setRangeTo] = useState<string>('');
+  const [timeRange, setTimeRange] = useState<TimeRange>(getDefaultTimeRange());
+  const [planStatusFilter, setPlanStatusFilter] = useState<PlanStatus | null>(null);
 
-  // 初始化日期范围
+  // 同步 timeRange 到日期范围
   useEffect(() => {
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const monthEnd = new Date(now.getFullYear(), now.getMonth() + 1, 0);
-    setRangeFrom(formatLocalISODate(monthStart));
-    setRangeTo(formatLocalISODate(monthEnd));
-  }, []);
+    setRangeFrom(formatLocalISODate(timeRange.start));
+    setRangeTo(formatLocalISODate(timeRange.end));
+  }, [timeRange]);
 
   // 加载数据
   useEffect(() => {
@@ -63,14 +66,18 @@ export default function DashboardPage() {
     loadData();
   }, []);
 
+  // 信用卡/花呗还款属于内部转账，不纳入收入/支出合计
+  const REPAYMENT_CATEGORIES = new Set(['信用卡还款', '花呗还款']);
+  const isRepayment = (txn: ITransaction) => REPAYMENT_CATEGORIES.has(txn.category);
+
   // 辅助函数：计算日期范围
   const getDateRange = (period: StatsPeriod) => {
     const now = new Date();
     let start, end;
     switch (period) {
       case 'month':
-        start = new Date(now.getFullYear(), now.getMonth(), 1);
-        end = new Date(now.getFullYear(), now.getMonth() + 1, 0);
+        start = timeRange.start;
+        end = timeRange.end;
         break;
       case 'quarter':
         start = new Date(now.getFullYear(), Math.floor(now.getMonth() / 3) * 3, 1);
@@ -90,6 +97,11 @@ export default function DashboardPage() {
 
   // 自动设置日期范围
   useEffect(() => {
+    if (selectedPeriod === 'month') {
+      const tr = getDefaultTimeRange();
+      setTimeRange(tr);
+      return;
+    }
     const { rangeFrom: from, rangeTo: to } = getDateRange(selectedPeriod);
     setRangeFrom(from);
     setRangeTo(to);
@@ -105,30 +117,62 @@ export default function DashboardPage() {
   }, [transactions, rangeFrom, rangeTo, timelineMode]);
 
   // ==========================================
+  // D7 — 计划状态逐笔标注（用于计数 + 过滤联动）
+  // ==========================================
+  const transactionPlanStatuses = useMemo(() => {
+    const result = new Map<number | string, PlanStatus>();
+    const budgetMap = new Map(budgets.map((b: any) => [String(b.id), b]));
+    const budgetAccUsed = new Map<string, number>();
+
+    const expenses = transactions
+      .filter(t => t.amount < 0 && t.date >= formatLocalISODate(timeRange.start) && t.date <= formatLocalISODate(timeRange.end))
+      .sort((a, b) => a.date.localeCompare(b.date));
+
+    expenses.forEach(t => {
+      const ps = classifyPlanStatus(t as any, budgetMap, budgetAccUsed);
+      result.set(t.id!, ps);
+      if (t.budgetId) {
+        const key = String(t.budgetId);
+        budgetAccUsed.set(key, (budgetAccUsed.get(key) || 0) + Math.abs(t.amount));
+      }
+    });
+    return result;
+  }, [transactions, budgets, timeRange]);
+
+  // D7: 过滤联动 — 点击卡片后筛选交易
+  const statusFilteredTransactions = useMemo(() => {
+    if (!planStatusFilter) return filteredTransactions;
+    return filteredTransactions.filter(t => {
+      if (t.amount >= 0) return true;
+      return transactionPlanStatuses.get(t.id!) === planStatusFilter;
+    });
+  }, [filteredTransactions, transactionPlanStatuses, planStatusFilter]);
+
+  // ==========================================
   // 1. 财务状态概览
   // ==========================================
   const financialOverview = useMemo(() => {
-    const income = filteredTransactions
-      .filter((txn) => txn.amount > 0)
+    const income = statusFilteredTransactions
+      .filter((txn) => txn.amount > 0 && !isRepayment(txn))
       .reduce((sum, txn) => sum + txn.amount, 0);
 
-    const expenses = filteredTransactions
-      .filter((txn) => txn.amount < 0)
+    const expenses = statusFilteredTransactions
+      .filter((txn) => txn.amount < 0 && !isRepayment(txn))
       .reduce((sum, txn) => sum + Math.abs(txn.amount), 0);
 
     const savingRate = income > 0 ? Math.max(0, Math.min(100, ((income - expenses) / income) * 100)) : 0;
 
     // 支出属性拆分
-    const rigidExpenses = filteredTransactions
+    const rigidExpenses = statusFilteredTransactions
       .filter((txn) => txn.amount < 0 && inferExpenseAttribute(txn) === 'rigid_fixed')
       .reduce((sum, txn) => sum + Math.abs(txn.amount), 0);
-    const flexibleExpenses = filteredTransactions
+    const flexibleExpenses = statusFilteredTransactions
       .filter((txn) => txn.amount < 0 && inferExpenseAttribute(txn) === 'flexible_monthly')
       .reduce((sum, txn) => sum + Math.abs(txn.amount), 0);
 
-    // 现金安全月数（估算：假设账户总余额 / 月均支出）
-    const accountBalances = accounts.reduce((sum, acc) => sum + (acc.totalDebt || 0), 0);
-    const monthlyAverageExpense = expenses; // 简化处理
+    // 现金安全月数（估算：账户总余额 / 月均支出）
+    const accountBalances = accounts.reduce((sum, acc) => sum + (acc.balance || 0), 0);
+    const monthlyAverageExpense = expenses;
     const cashSafetyMonths = monthlyAverageExpense > 0 ? Math.max(0, accountBalances / monthlyAverageExpense) : 0;
 
     // 负债压力
@@ -155,7 +199,7 @@ export default function DashboardPage() {
       debtPressure,
       budgetStatus,
     };
-  }, [filteredTransactions, accounts, budgets]);
+  }, [statusFilteredTransactions, accounts, budgets]);
 
   // ==========================================
   // 2. 本月环比
@@ -170,10 +214,10 @@ export default function DashboardPage() {
     const thisMonthTxns = transactions.filter(t => t.date >= thisMonthStart && t.date <= thisMonthEnd);
     const lastMonthTxns = transactions.filter(t => t.date >= lastMonthStart && t.date <= lastMonthEnd);
 
-    const thisIncome = thisMonthTxns.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-    const thisExpense = thisMonthTxns.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
-    const lastIncome = lastMonthTxns.filter(t => t.amount > 0).reduce((s, t) => s + t.amount, 0);
-    const lastExpense = lastMonthTxns.filter(t => t.amount < 0).reduce((s, t) => s + Math.abs(t.amount), 0);
+    const thisIncome = thisMonthTxns.filter(t => t.amount > 0 && !isRepayment(t)).reduce((s, t) => s + t.amount, 0);
+    const thisExpense = thisMonthTxns.filter(t => t.amount < 0 && !isRepayment(t)).reduce((s, t) => s + Math.abs(t.amount), 0);
+    const lastIncome = lastMonthTxns.filter(t => t.amount > 0 && !isRepayment(t)).reduce((s, t) => s + t.amount, 0);
+    const lastExpense = lastMonthTxns.filter(t => t.amount < 0 && !isRepayment(t)).reduce((s, t) => s + Math.abs(t.amount), 0);
 
     const incomeChange = lastIncome > 0 ? ((thisIncome - lastIncome) / lastIncome * 100) : 0;
     const expenseChange = lastExpense > 0 ? ((thisExpense - lastExpense) / lastExpense * 100) : 0;
@@ -192,53 +236,122 @@ export default function DashboardPage() {
   //      yearly   amount ÷ 12
   //      custom   amount × (自定义周期&当月重叠天数 / 周期天数)
   // ==========================================
+  const aggregated = useMemo(() => {
+    return aggregateExpenses({
+      transactions,
+      budgets,
+      refDate: timeRange.start,
+      monthStart: formatLocalISODate(timeRange.start),
+      monthEnd: formatLocalISODate(timeRange.end),
+    });
+  }, [transactions, budgets, timeRange]);
+
+  // D7: 上月聚合（用于环比 MoM）
+  const prevAggregated = useMemo(() => {
+    const prevStart = new Date(timeRange.start.getFullYear(), timeRange.start.getMonth() - 1, 1);
+    const prevEnd = new Date(timeRange.start.getFullYear(), timeRange.start.getMonth(), 0);
+    return aggregateExpenses({
+      transactions,
+      budgets,
+      refDate: prevStart,
+      monthStart: formatLocalISODate(prevStart),
+      monthEnd: formatLocalISODate(prevEnd),
+    });
+  }, [transactions, budgets, timeRange]);
+
+  // D7: 四张计划状态卡片数据
+  type PlanStatusCard = {
+    key: PlanStatus;
+    label: string;
+    amount: number;
+    count: number;
+    pct: number;
+    prevPct: number;
+    icon: typeof CheckCircle2;
+    colorClass: string;
+    bgClass: string;
+    borderClass: string;
+  };
+
+  const planStatusMeta = useMemo((): Array<{ key: PlanStatus; label: string; icon: typeof CheckCircle2; colorClass: string; bgClass: string; borderClass: string }> => [
+    { key: 'planned', label: '计划内', icon: CheckCircle2, colorClass: 'text-emerald-600', bgClass: 'bg-emerald-50', borderClass: 'border-emerald-200' },
+    { key: 'over_budget', label: '超预算', icon: AlertCircle, colorClass: 'text-rose-600', bgClass: 'bg-rose-50', borderClass: 'border-rose-200' },
+    { key: 'unplanned_adjustment', label: '计划外调整', icon: Pencil, colorClass: 'text-amber-600', bgClass: 'bg-amber-50', borderClass: 'border-amber-200' },
+    { key: 'unexpected', label: '意外支出', icon: ShieldAlert, colorClass: 'text-red-600', bgClass: 'bg-red-50', borderClass: 'border-red-200' },
+  ], []);
+
+  const planStatusCards = useMemo((): PlanStatusCard[] => {
+    const { planStatusSummary, totalExpense } = aggregated.overall;
+    const prevTotal = prevAggregated.overall.totalExpense || 1;
+
+    const statusCounts: Record<PlanStatus, number> = { planned: 0, over_budget: 0, unexpected: 0, unplanned_adjustment: 0 };
+    transactionPlanStatuses.forEach(ps => { statusCounts[ps]++; });
+
+    return planStatusMeta.map(d => ({
+      ...d,
+      amount: planStatusSummary[d.key],
+      count: statusCounts[d.key],
+      pct: totalExpense > 0 ? Math.round((planStatusSummary[d.key] / totalExpense) * 100) : 0,
+      prevPct: prevTotal > 0 ? Math.round((prevAggregated.overall.planStatusSummary[d.key] / prevTotal) * 100) : 0,
+    }));
+  }, [aggregated, prevAggregated, transactionPlanStatuses]);
+
+  // ==========================================
+  // D8 — 分类矩阵（类别 × 计划状态）
+  // ==========================================
+  const [selectedMatrixCell, setSelectedMatrixCell] = useState<{ category: string; status: PlanStatus } | null>(null);
+
+  type MatrixCell = { category: string; status: PlanStatus; amount: number; count: number; txns: ITransaction[] };
+
+  const categoryPlanStatusMatrix = useMemo((): MatrixCell[] => {
+    const cells: Record<string, Record<string, { amount: number; count: number; txns: ITransaction[] }>> = {};
+    const allCategories = new Set<string>();
+
+    statusFilteredTransactions
+      .filter(t => t.amount < 0)
+      .forEach(t => {
+        const cat = t.category || '其他';
+        const ps = transactionPlanStatuses.get(t.id!) || 'unplanned_adjustment';
+        allCategories.add(cat);
+        if (!cells[cat]) cells[cat] = {};
+        if (!cells[cat][ps]) cells[cat][ps] = { amount: 0, count: 0, txns: [] };
+        cells[cat][ps].amount += Math.abs(t.amount);
+        cells[cat][ps].count += 1;
+        cells[cat][ps].txns.push(t);
+      });
+
+    const statuses: PlanStatus[] = ['planned', 'over_budget', 'unplanned_adjustment', 'unexpected'];
+    const result: MatrixCell[] = [];
+    for (const cat of Array.from(allCategories).sort()) {
+      for (const st of statuses) {
+        const c = cells[cat]?.[st];
+        result.push({ category: cat, status: st, amount: c?.amount || 0, count: c?.count || 0, txns: c?.txns || [] });
+      }
+    }
+    return result;
+  }, [statusFilteredTransactions, transactionPlanStatuses]);
+
+  // 矩阵中最大金额（用于热力图颜色映射）
+  const matrixMaxAmount = useMemo(
+    () => Math.max(1, ...categoryPlanStatusMatrix.map(c => c.amount)),
+    [categoryPlanStatusMatrix],
+  );
+
   const budgetProgressData = useMemo(() => {
-    const refDate = new Date();
-    const monthStart = formatLocalISODate(new Date(refDate.getFullYear(), refDate.getMonth(), 1));
-    const monthEnd = formatLocalISODate(new Date(refDate.getFullYear(), refDate.getMonth() + 1, 0));
-
-    // 第一步：按分类汇总分母（月折算后）
-    const categoryBudget = new Map<string, { denominator: number; budgetIds: Set<string> }>();
-    budgets.forEach((b: any) => {
-      if (!b || Number(b.amount) <= 0) return;
-      const norm = normalizeBudgetToCurrentMonth(b, { refDate, prorateMonthlyByElapsedDays: false });
-      const key = (b.category as string) || '其他';
-      const prev = categoryBudget.get(key) || { denominator: 0, budgetIds: new Set() };
-      prev.denominator += Math.max(0, norm.normalizedBudgetAmount);
-      prev.budgetIds.add(String(b.id));
-      categoryBudget.set(key, prev);
-    });
-
-    // 第二步：按分类汇总分子（每笔交易只计一次）
-    const categoryUsed = new Map<string, number>();
-    transactions.forEach((t) => {
-      if (t.amount >= 0) return;
-      if (t.date < monthStart || t.date > monthEnd) return;
-
-      let catKey: string | null = null;
-      if (t.budgetId) {
-        // 有 budgetId 的交易：按所属预算的分类归入
-        const budget = budgets.find((b: any) => String(b.id) === String(t.budgetId));
-        if (budget) catKey = (budget.category as string) || '其他';
-      } else {
-        // 无 budgetId 的交易：按自身分类归入
-        catKey = (t.category as string) || '其他';
-      }
-      if (catKey) {
-        categoryUsed.set(catKey, (categoryUsed.get(catKey) || 0) + Math.abs(t.amount));
-      }
-    });
-
-    return DEFAULT_CATEGORIES.map((category) => {
-      const b = categoryBudget.get(category);
-      if (!b || b.denominator <= 0) return null;
-      const actualAmount = categoryUsed.get(category) || 0;
-      const progress = Math.round(
-        b.denominator > 0 ? Math.min(99999, (actualAmount / b.denominator) * 100) : 0,
-      );
-      return { category, budgetAmount: b.denominator, actualAmount, progress };
-    }).filter(Boolean);
-  }, [transactions, budgets]);
+    const catMap = new Map(aggregated.budgetProgressByCategory.map(bp => [bp.category, bp]));
+    return DEFAULT_CATEGORIES
+      .map(category => {
+        const bp = catMap.get(category);
+        if (!bp || bp.budgetAmount <= 0) return null;
+        return {
+          category,
+          budgetAmount: bp.budgetAmount,
+          actualAmount: bp.used,
+          progress: bp.rate,
+        };
+      })
+      .filter(Boolean);
+  }, [aggregated]);
 
   // ==========================================
   // 4. 预警中心
@@ -271,7 +384,7 @@ export default function DashboardPage() {
     });
 
     // 3. 大额支出识别
-    const largeExpenses = filteredTransactions
+    const largeExpenses = statusFilteredTransactions
       .filter((txn) => Math.abs(txn.amount) > 2000)
       .sort((a, b) => Math.abs(b.amount) - Math.abs(a.amount));
     if (largeExpenses.length > 0) {
@@ -294,16 +407,18 @@ export default function DashboardPage() {
     }
 
     return items;
-  }, [financialOverview, budgetProgressData, filteredTransactions]);
+  }, [financialOverview, budgetProgressData, statusFilteredTransactions]);
 
   // ==========================================
   // 5. 财务趋势图
   // ==========================================
   const trendChartOption = useMemo(() => {
     const months = [];
-    const now = new Date();
-    for (let i = 5; i >= 0; i--) {
-      months.push(new Date(now.getFullYear(), now.getMonth() - i, 1));
+    const monthCounts: Record<StatsPeriod, number> = { month: 1, quarter: 3, halfyear: 6, year: 12 };
+    const count = monthCounts[selectedPeriod] || 6;
+    const anchorEnd = selectedPeriod === 'month' ? new Date(timeRange.end) : new Date();
+    for (let i = count - 1; i >= 0; i--) {
+      months.push(new Date(anchorEnd.getFullYear(), anchorEnd.getMonth() - i, 1));
     }
 
     const incomeData: number[] = [];
@@ -316,8 +431,8 @@ export default function DashboardPage() {
       const monthEnd = formatLocalISODate(new Date(month.getFullYear(), month.getMonth() + 1, 0));
       const txnsInMonth = transactions.filter((txn) => txn.date >= monthStart && txn.date <= monthEnd);
 
-      const income = txnsInMonth.filter((txn) => txn.amount > 0).reduce((sum, txn) => sum + txn.amount, 0);
-      const expense = txnsInMonth.filter((txn) => txn.amount < 0).reduce((sum, txn) => sum + Math.abs(txn.amount), 0);
+      const income = txnsInMonth.filter((txn) => txn.amount > 0 && !isRepayment(txn)).reduce((sum, txn) => sum + txn.amount, 0);
+      const expense = txnsInMonth.filter((txn) => txn.amount < 0 && !isRepayment(txn)).reduce((sum, txn) => sum + Math.abs(txn.amount), 0);
       incomeData.push(Math.round(income));
       expenseData.push(Math.round(expense));
       savingData.push(Math.round(income - expense));
@@ -379,7 +494,7 @@ export default function DashboardPage() {
         { name: '储蓄', type: 'line', data: savingData, smooth: true, itemStyle: { color: CHART_COLORS[1] } },
       ],
     };
-  }, [transactions]);
+  }, [transactions, selectedPeriod, timeRange]);
 
   // ==========================================
   // 6. 分类支出分布（饼图）
@@ -387,7 +502,7 @@ export default function DashboardPage() {
   const categoryPieChartOption = useMemo(() => {
     const categoryTotals = new Map<string, number>();
 
-    filteredTransactions
+    statusFilteredTransactions
       .filter(txn => txn.amount < 0)
       .forEach(txn => {
         const current = categoryTotals.get(txn.category) || 0;
@@ -402,7 +517,7 @@ export default function DashboardPage() {
       .sort((a, b) => b.value - a.value);
 
     const categoryTxnsMap = new Map<string, ITransaction[]>();
-    filteredTransactions
+    statusFilteredTransactions
       .filter(txn => txn.amount < 0)
       .forEach(txn => {
         if (!categoryTxnsMap.has(txn.category)) {
@@ -474,7 +589,7 @@ export default function DashboardPage() {
         },
       ],
     };
-  }, [filteredTransactions]);
+  }, [statusFilteredTransactions]);
 
   // ==========================================
   // 7. 账户支出对比（柱状图）
@@ -482,7 +597,7 @@ export default function DashboardPage() {
   const accountBarChartOption = useMemo(() => {
     const accountTotals = new Map<string, number>();
 
-    filteredTransactions
+    statusFilteredTransactions
       .filter(txn => txn.amount < 0)
       .forEach(txn => {
         const accountName = accounts.find(a => a.id === txn.accountId)?.name || '未知账户';
@@ -498,7 +613,7 @@ export default function DashboardPage() {
       .sort((a, b) => b.value - a.value);
 
     const accountTxnsMap = new Map<string, ITransaction[]>();
-    filteredTransactions
+    statusFilteredTransactions
       .filter(txn => txn.amount < 0)
       .forEach(txn => {
         const accountName = accounts.find(a => a.id === txn.accountId)?.name || '未知账户';
@@ -564,7 +679,7 @@ export default function DashboardPage() {
         },
       ],
     };
-  }, [filteredTransactions, accounts]);
+  }, [statusFilteredTransactions, accounts]);
 
   // ==========================================
   // Render
@@ -575,7 +690,24 @@ export default function DashboardPage() {
       {/* ① 标题行 */}
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
         <div>
-          <h1 className="text-2xl font-bold text-foreground">财务仪表盘</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-2xl font-bold text-foreground">财务仪表盘</h1>
+            {selectedPeriod === 'month' && (
+              <>
+                <Button variant="ghost" size="icon" className="h-8 w-8 ml-2"
+                  onClick={() => setTimeRange(prev => shiftTimeRange(prev, -1))}>
+                  <ChevronLeft className="h-4 w-4" />
+                </Button>
+                <span className="text-sm font-medium min-w-[80px] text-center tabular-nums">
+                  {getMonthLabel(timeRange)}
+                </span>
+                <Button variant="ghost" size="icon" className="h-8 w-8"
+                  onClick={() => setTimeRange(prev => shiftTimeRange(prev, 1))}>
+                  <ChevronRight className="h-4 w-4" />
+                </Button>
+              </>
+            )}
+          </div>
           <p className="text-sm text-muted-foreground mt-1">财务概况、预警与支出分析</p>
         </div>
           <Tabs value={selectedPeriod} onValueChange={(v) => setSelectedPeriod(v as StatsPeriod)} className="shrink-0">
@@ -616,18 +748,214 @@ export default function DashboardPage() {
         {/* ③ 财务状态概览 */}
         <SummaryCards overview={financialOverview} />
 
+        {/* D7 计划状态总览卡 */}
+        <div className="grid grid-cols-4 gap-3">
+          {planStatusCards.map(card => {
+            const isActive = planStatusFilter === card.key;
+            const isUnexpected = card.key === 'unexpected';
+            const showWarning = isUnexpected && card.pct > 10;
+            const moMDiff = card.pct - card.prevPct;
+            const moMSign = moMDiff > 0 ? '+' : '';
+            const Icon = card.icon;
+
+            return (
+              <div
+                key={card.key}
+                onClick={() => setPlanStatusFilter(isActive ? null : card.key)}
+                className={`
+                  cursor-pointer rounded-lg border-2 p-3 transition-all
+                  ${card.bgClass} ${card.borderClass}
+                  ${isActive ? 'ring-2 ring-offset-1 ring-primary shadow-md' : 'hover:shadow-sm'}
+                  ${showWarning ? 'border-red-500 bg-red-50 ring-1 ring-red-300' : ''}
+                `}
+              >
+                <div className="flex items-center gap-1.5 mb-1">
+                  <Icon className={`h-4 w-4 ${card.colorClass}`} />
+                  <span className="text-xs font-medium text-muted-foreground">{card.label}</span>
+                </div>
+                <div className="text-lg font-bold">¥{card.amount.toLocaleString()}</div>
+                <div className="text-xs text-muted-foreground">{card.count} 笔</div>
+                <div
+                  className="text-xs font-semibold mt-0.5"
+                  title={`上月占比 ${card.prevPct}%${moMDiff !== 0 ? `（${moMSign}${moMDiff}%）` : '（持平）'}`}
+                >
+                  <span className={showWarning ? 'text-red-600' : card.colorClass}>
+                    {card.pct}%
+                  </span>
+                  {moMDiff !== 0 && (
+                    <span className={`ml-0.5 ${moMDiff > 0 ? (isUnexpected ? 'text-red-500' : 'text-rose-500') : 'text-emerald-500'}`}>
+                      {moMSign}{moMDiff}%
+                    </span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* ========== D8 分类矩阵 ========== */}
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">分类 × 计划状态矩阵</CardTitle>
+            <CardDescription>金额色深越大 → 支出越多；点击单元格查看明细</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm border-collapse">
+                <thead>
+                  <tr>
+                    <th className="text-left py-1.5 px-2 font-medium text-muted-foreground text-xs w-20">类别</th>
+                    {(['planned', 'over_budget', 'unplanned_adjustment', 'unexpected'] as PlanStatus[]).map(st => {
+                      const meta = planStatusMeta.find(m => m.key === st)!;
+                      const Icon = meta.icon;
+                      return (
+                        <th key={st} className={`text-center py-1.5 px-1 font-medium text-xs ${meta.colorClass}`}>
+                          <div className="flex items-center justify-center gap-0.5">
+                            <Icon className="h-3 w-3" />
+                            <span>{meta.label}</span>
+                          </div>
+                        </th>
+                      );
+                    })}
+                  </tr>
+                </thead>
+                <tbody>
+                  {(() => {
+                    const categories = Array.from(new Set(categoryPlanStatusMatrix.map(c => c.category)));
+                    return categories.map(cat => (
+                      <tr key={cat}>
+                        <td className="py-1 px-2 font-medium text-xs whitespace-nowrap">{cat}</td>
+                        {(['planned', 'over_budget', 'unplanned_adjustment', 'unexpected'] as PlanStatus[]).map(st => {
+                          const cell = categoryPlanStatusMatrix.find(c => c.category === cat && c.status === st)!;
+                          // 热力图颜色：从最浅到最深
+                          const ratio = cell.amount / matrixMaxAmount;
+                          const blueIntensity = Math.round(ratio * 220);
+                          const bgColor = cell.amount > 0
+                            ? `rgba(59, 130, 246, ${(0.08 + ratio * 0.55).toFixed(2)})`
+                            : 'transparent';
+                          const selected = selectedMatrixCell?.category === cat && selectedMatrixCell?.status === st;
+                          return (
+                            <td
+                              key={st}
+                              className={`text-center py-1.5 px-1 cursor-pointer transition-colors rounded ${selected ? 'ring-2 ring-blue-400' : ''}`}
+                              style={{ backgroundColor: bgColor }}
+                              onClick={() => setSelectedMatrixCell(cell.count > 0 ? { category: cat, status: st } : null)}
+                              title={cell.amount > 0 ? `${cat} · ${planStatusMeta.find(m => m.key === st)!.label}：¥${cell.amount.toLocaleString()}（${cell.count}笔）` : '无数据'}
+                            >
+                              {cell.amount > 0 ? (
+                                <>
+                                  <div className="font-semibold text-xs" style={{ color: `rgb(${Math.round(30 + ratio * 160)}, ${Math.round(64 - ratio * 30)}, ${Math.round(210 - ratio * 100)})` }}>
+                                    ¥{cell.amount >= 1000 ? `${(cell.amount / 1000).toFixed(1)}k` : cell.amount.toLocaleString()}
+                                  </div>
+                                  <div className="text-[10px] text-muted-foreground">{cell.count}笔</div>
+                                </>
+                              ) : (
+                                <span className="text-muted-foreground/30 text-xs">—</span>
+                              )}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ));
+                  })()}
+                </tbody>
+              </table>
+            </div>
+            {categoryPlanStatusMatrix.length === 0 && (
+              <p className="text-sm text-muted-foreground text-center py-4">暂无数据</p>
+            )}
+          </CardContent>
+        </Card>
+
+        {/* D8 明细抽屉 */}
+        {selectedMatrixCell && (() => {
+          const drawerCell = categoryPlanStatusMatrix.find(
+            c => c.category === selectedMatrixCell!.category && c.status === selectedMatrixCell!.status
+          )!;
+          const stMeta = planStatusMeta.find(m => m.key === drawerCell.status)!;
+          return (
+            <>
+              <div className="fixed inset-0 bg-black/30 z-40" onClick={() => setSelectedMatrixCell(null)} />
+              <div className="fixed right-0 top-0 h-full w-96 bg-background border-l z-50 overflow-y-auto shadow-xl animate-slide-in-right">
+                <div className="p-4 border-b sticky top-0 bg-background z-10 flex items-center justify-between">
+                  <div>
+                    <h3 className="font-semibold text-sm">{drawerCell.category}</h3>
+                    <p className={`text-xs flex items-center gap-1 mt-0.5 ${stMeta.colorClass}`}>
+                      <stMeta.icon className="h-3 w-3" />{stMeta.label}
+                    </p>
+                  </div>
+                  <Button variant="ghost" size="icon" onClick={() => setSelectedMatrixCell(null)} className="h-7 w-7">
+                    <X className="h-4 w-4" />
+                  </Button>
+                </div>
+                <div className="p-4">
+                  <div className="flex gap-4 mb-4 text-sm">
+                    <div>
+                      <span className="text-muted-foreground">合计</span>
+                      <span className="font-semibold ml-2">¥{drawerCell.amount.toLocaleString()}</span>
+                    </div>
+                    <div>
+                      <span className="text-muted-foreground">笔数</span>
+                      <span className="font-semibold ml-2">{drawerCell.count}</span>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    {drawerCell.txns.map(txn => {
+                      const acct = accounts.find(a => a.id === txn.accountId);
+                      return (
+                        <div key={txn.id} className="p-2.5 border rounded-md text-sm hover:bg-accent/50 transition-colors">
+                          <div className="flex justify-between items-start">
+                            <span className="font-medium">{txn.note || '无备注'}</span>
+                            <span className="font-semibold text-rose-600">¥{Math.abs(txn.amount).toLocaleString()}</span>
+                          </div>
+                          <div className="flex gap-3 text-xs text-muted-foreground mt-1">
+                            <span>{txn.date}</span>
+                            {acct && <span>{acct.name}</span>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            </>
+          );
+        })()}
+
         {/* ④ 本月环比 */}
-        {monthOverMonth && (
+        {monthOverMonth && (() => {
+          const incomeDiff = monthOverMonth.thisIncome - monthOverMonth.lastIncome;
+          const incomeUp = incomeDiff >= 0;
+          const expenseDiff = monthOverMonth.thisExpense - monthOverMonth.lastExpense;
+          const expenseUp = expenseDiff >= 0;
+          return (
           <Card>
             <CardHeader><CardTitle className="text-base">本月环比</CardTitle></CardHeader>
             <CardContent className="space-y-2 text-sm">
               <div className="flex justify-between"><span>本月收入</span><span className="font-semibold">¥{monthOverMonth.thisIncome.toLocaleString()}</span></div>
-              <div className="flex justify-between"><span>上月收入</span><span className="font-semibold">¥{monthOverMonth.lastIncome.toLocaleString()}</span></div>
+              <div className="flex justify-between">
+                <span>上月收入</span>
+                <span className={incomeUp ? 'text-emerald-600' : 'text-rose-600'}>
+                  <span className="font-semibold">¥{monthOverMonth.lastIncome.toLocaleString()}</span>
+                  {incomeDiff !== 0 && (
+                    <span className="ml-1 text-xs">({incomeUp ? '+' : ''}{incomeDiff.toLocaleString()})</span>
+                  )}
+                </span>
+              </div>
               <div className="flex justify-between"><span>本月支出</span><span className="font-semibold">¥{monthOverMonth.thisExpense.toLocaleString()}</span></div>
-              <div className="flex justify-between"><span>上月支出</span><span className="font-semibold">¥{monthOverMonth.lastExpense.toLocaleString()}</span></div>
+              <div className="flex justify-between">
+                <span>上月支出</span>
+                <span className={expenseUp ? 'text-rose-600' : 'text-emerald-600'}>
+                  <span className="font-semibold">¥{monthOverMonth.lastExpense.toLocaleString()}</span>
+                  {expenseDiff !== 0 && (
+                    <span className="ml-1 text-xs">({expenseUp ? '+' : ''}{expenseDiff.toLocaleString()})</span>
+                  )}
+                </span>
+              </div>
             </CardContent>
           </Card>
-        )}
+          );
+        })()}
 
         {/* ⑤ 预警中心 */}
         <AlertPanel alerts={alerts} />
@@ -672,7 +1000,7 @@ export default function DashboardPage() {
         </Card>
 
         {/* ⑩ 最近交易 */}
-        <RecentTransactions transactions={filteredTransactions} accounts={accounts} />
+        <RecentTransactions transactions={statusFilteredTransactions} accounts={accounts} />
     </div>
   );
 }

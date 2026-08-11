@@ -86,6 +86,8 @@ const TRANSACTION_TYPE_LABELS: Record<string, string> = {
   installment_bill: '分期',
 };
 
+const REPAYMENT_CATEGORIES = new Set(['信用卡还款', '花呗还款']);
+
 const PAGE_SIZE = 20;
 
 // ============================================================
@@ -236,12 +238,14 @@ const TransactionsPage: React.FC = () => {
   }, [filtered, page]);
 
   // Totals
+  const isRepayment = (txn: ITransaction) =>
+    REPAYMENT_CATEGORIES.has(txn.category);
   const totalIncome = useMemo(
-    () => filtered.filter((t) => t.amount > 0).reduce((sum, t) => sum + t.amount, 0),
+    () => filtered.filter((t) => t.amount > 0 && !isRepayment(t)).reduce((sum, t) => sum + t.amount, 0),
     [filtered],
   );
   const totalExpense = useMemo(
-    () => filtered.filter((t) => t.amount < 0).reduce((sum, t) => sum + Math.abs(t.amount), 0),
+    () => filtered.filter((t) => t.amount < 0 && !isRepayment(t)).reduce((sum, t) => sum + Math.abs(t.amount), 0),
     [filtered],
   );
 

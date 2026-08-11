@@ -82,21 +82,118 @@ function buildBudgetSettlementsForRange(db, rangeFrom, rangeTo) {
     while (formatISODate(cursor) <= toISO) {
       const window = getBudgetCycleWindow(budget, cursor);
       if (!window) break;
-      if (window.end >= rangeFrom && window.end <= rangeTo) {
+      if (window.start >= rangeFrom && window.start <= rangeTo) {
         const used = budgetTransactions
           .filter((t) => t.date >= window.start && t.date <= window.end)
           .reduce((sum, t) => sum + Math.abs(t.amount), 0);
         const expectedAmount = Math.max(0, budget.amount - used);
         if (expectedAmount > 0) {
           results.push({
-            id: `budget-${budget.id}-${window.end}`,
-            date: window.end,
+            id: `budget-${budget.id}-${window.start}`,
+            date: window.start,
             amount: -expectedAmount,
           });
         }
       }
       cursor = addDays(parseISODate(window.end), 1);
       if (results.length > 2000) break;
+    }
+  });
+
+  return results;
+}
+
+function buildIncomeSettlementsForRange(db, rangeFrom, rangeTo) {
+  const budgets = db.prepare(`
+    SELECT
+      id, name, amount, cycle_type AS cycleType, expected_date AS expectedDate,
+      start_date AS startDate, end_date AS endDate, cycle_days AS cycleDays
+    FROM income_budgets
+  `).all();
+
+  const results = [];
+  const fromDate = new Date(rangeFrom);
+  const toDate = new Date(rangeTo);
+
+  budgets.forEach((budget) => {
+    const budgetStart = new Date(budget.startDate);
+    const budgetEnd = budget.endDate ? new Date(budget.endDate) : null;
+    const expected = new Date(budget.expectedDate);
+    const expectedDay = expected.getDate();
+
+    // once：仅 expected_date 当天
+    if (budget.cycleType === 'once') {
+      if (expected >= fromDate && expected <= toDate) {
+        results.push({
+          id: `income-${budget.id}-${budget.expectedDate}`,
+          date: budget.expectedDate,
+          amount: budget.amount,
+        });
+      }
+      return;
+    }
+
+    // monthly：每月 expected_date.getDate() 号
+    if (budget.cycleType === 'monthly') {
+      let current = new Date(Math.max(fromDate.getTime(), budgetStart.getTime()));
+      current.setDate(expectedDay);
+      if (current < budgetStart) { current.setMonth(current.getMonth() + 1); }
+      while (current <= toDate && (!budgetEnd || current <= budgetEnd)) {
+        const ds = current.toISOString().split('T')[0];
+        if (ds >= rangeFrom && ds <= rangeTo) {
+          results.push({ id: `income-${budget.id}-${ds}`, date: ds, amount: budget.amount });
+        }
+        current.setMonth(current.getMonth() + 1);
+      }
+      return;
+    }
+
+    // weekly：每周 expected_date 的星期几
+    if (budget.cycleType === 'weekly') {
+      const baseDay = expected.getDay();
+      let current = new Date(Math.max(fromDate.getTime(), budgetStart.getTime()));
+      const diff = (baseDay - current.getDay() + 7) % 7;
+      current.setDate(current.getDate() + diff);
+      if (current < budgetStart) { current.setDate(current.getDate() + 7); }
+      while (current <= toDate && (!budgetEnd || current <= budgetEnd)) {
+        const ds = current.toISOString().split('T')[0];
+        if (ds >= rangeFrom && ds <= rangeTo) {
+          results.push({ id: `income-${budget.id}-${ds}`, date: ds, amount: budget.amount });
+        }
+        current.setDate(current.getDate() + 7);
+      }
+      return;
+    }
+
+    // yearly：每年同月同日
+    if (budget.cycleType === 'yearly') {
+      let current = new Date(Math.max(fromDate.getTime(), budgetStart.getTime()));
+      current.setMonth(expected.getMonth());
+      current.setDate(expected.getDate());
+      if (current < budgetStart) { current.setFullYear(current.getFullYear() + 1); }
+      while (current <= toDate && (!budgetEnd || current <= budgetEnd)) {
+        const ds = current.toISOString().split('T')[0];
+        if (ds >= rangeFrom && ds <= rangeTo) {
+          results.push({ id: `income-${budget.id}-${ds}`, date: ds, amount: budget.amount });
+        }
+        current.setFullYear(current.getFullYear() + 1);
+      }
+      return;
+    }
+
+    // custom：每 cycleDays 天，从 start_date 起算
+    if (budget.cycleType === 'custom' && budget.cycleDays) {
+      let current = new Date(Math.max(fromDate.getTime(), budgetStart.getTime()));
+      const dayDiff = Math.ceil((current.getTime() - budgetStart.getTime()) / (1000 * 60 * 60 * 24));
+      const cycles = Math.ceil(dayDiff / budget.cycleDays);
+      current = new Date(budgetStart.getTime() + cycles * budget.cycleDays * 24 * 60 * 60 * 1000);
+      while (current <= toDate && (!budgetEnd || current <= budgetEnd)) {
+        const ds = current.toISOString().split('T')[0];
+        if (ds >= rangeFrom && ds <= rangeTo) {
+          results.push({ id: `income-${budget.id}-${ds}`, date: ds, amount: budget.amount });
+        }
+        current.setDate(current.getDate() + budget.cycleDays);
+      }
     }
   });
 
@@ -132,6 +229,7 @@ router.post('/impact', (req, res) => {
       startBalance = 0,
       includePlannedExpenses = true,
       includeBudgetSettlement = true,
+      includeIncomeSettlement = true,
       simulatedExpense,
     } = req.body || {};
 
@@ -174,6 +272,7 @@ router.post('/impact', (req, res) => {
       : [];
 
     const settlementRows = includeBudgetSettlement ? buildBudgetSettlementsForRange(db, rangeFrom, rangeTo) : [];
+    const incomeSettlementRows = includeIncomeSettlement ? buildIncomeSettlementsForRange(db, rangeFrom, rangeTo) : [];
 
     const baselineDeltasByDate = new Map();
     transactionRows.forEach((row) => {
@@ -185,6 +284,9 @@ router.post('/impact', (req, res) => {
       baselineDeltasByDate.set(date, (baselineDeltasByDate.get(date) || 0) - Math.abs(Number(row.amount)));
     });
     settlementRows.forEach((row) => {
+      baselineDeltasByDate.set(row.date, (baselineDeltasByDate.get(row.date) || 0) + Number(row.amount));
+    });
+    incomeSettlementRows.forEach((row) => {
       baselineDeltasByDate.set(row.date, (baselineDeltasByDate.get(row.date) || 0) + Number(row.amount));
     });
 

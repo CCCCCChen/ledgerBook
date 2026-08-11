@@ -26,13 +26,16 @@ export default function BudgetProgress({ budgetData }: { budgetData: BudgetItem[
               const isWarn = !isOver && item.progress >= 80;
               const barColor = isOver ? 'bg-red-600' : isWarn ? 'bg-yellow-500' : 'bg-success';
               const barWidth = Math.min(item.progress, 100);
+              const overPct = item.budgetAmount > 0
+                ? Math.round((item.actualAmount / item.budgetAmount - 1) * 100)
+                : 0;
               return (
                 <div key={item.category}>
                   <div className="flex justify-between text-sm mb-1">
                     <span className={isOver ? 'text-red-600 font-semibold' : ''}>{item.category}</span>
                     <span className={isOver ? 'text-red-600 font-semibold' : 'text-muted-foreground'}>
                       ¥{item.actualAmount.toFixed(0)} / ¥{item.budgetAmount.toFixed(0)}
-                      {isOver && ` (+${item.progress - 100}%)`}
+                      {isOver && overPct > 0 && ` (+${overPct}%)`}
                     </span>
                   </div>
                   <div className={`w-full rounded-full h-2 ${isOver ? 'bg-red-100' : 'bg-secondary'}`}>

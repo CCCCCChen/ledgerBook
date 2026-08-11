@@ -202,21 +202,13 @@ export function normalizeBudgetToCurrentMonth(
   }
 
   if (budget.cycleType === 'weekly') {
-    // 用 getBudgetCycleWindow 取当前周窗口，按与当月的实际重叠天数折算
-    const w = getBudgetCycleWindow(budget, ref);
-    const cycleStart = w ? w.start : budget.startDate;
-    const cycleEnd = w ? w.end : budget.startDate;
-    const cycleTotalDays = 7;
-
-    const ov = rangeOverlap(cycleStart, cycleEnd, monthStart, monthEnd);
-    const overlapDays = ov ? dayDiffInclusive(ov[0], ov[1]) : 0;
-    const ratio = overlapDays / cycleTotalDays;
-
+    // 全月折算：amount × daysInMonth / 7
+    const ratio = daysInMonth / 7;
     return {
-      usedRangeStart: ov ? ov[0] : monthStart,
-      usedRangeEnd: ov ? ov[1] : monthStart,
-      overlapDays,
-      totalCycleDaysCovered: cycleTotalDays,
+      usedRangeStart: monthStart,
+      usedRangeEnd: monthEnd,
+      overlapDays: daysInMonth,
+      totalCycleDaysCovered: 7,
       normalizedBudgetAmount: amount * ratio,
     };
   }
@@ -226,40 +218,65 @@ export function normalizeBudgetToCurrentMonth(
       usedRangeStart: monthStart,
       usedRangeEnd: monthEnd,
       overlapDays: daysInMonth,
-      totalCycleDaysCovered: 365.25 / 12,
-      normalizedBudgetAmount: amount / 12,
+      totalCycleDaysCovered: 365.25,
+      normalizedBudgetAmount: amount * daysInMonth / 365.25,
     };
   }
 
-  // once / custom
-  let cycleStart = budget.startDate;
-  let cycleEnd = budget.endDate || budget.startDate;
-  let totalDays = 0;
+  // custom（重复周期）：全月折算 amount × daysInMonth / cycleDays
   if (budget.cycleType === 'custom' && (budget.cycleDays ?? 0) > 0) {
-    const w = getBudgetCycleWindow(budget, ref);
-    if (w) { cycleStart = w.start; cycleEnd = w.end; }
-    totalDays = Math.max(1, Number(budget.cycleDays) || 0);
-  } else if (budget.cycleType === 'custom') {
-    return null; // custom 缺 cycleDays → 无法折算
-  } else if (budget.cycleType === 'once') {
-    cycleStart = budget.startDate;
-    cycleEnd = budget.endDate || budget.startDate;
-    totalDays = dayDiffInclusive(cycleStart, cycleEnd);
-  } else {
-    totalDays = dayDiffInclusive(cycleStart, cycleEnd);
+    const cycleDays = Number(budget.cycleDays);
+    return {
+      usedRangeStart: monthStart,
+      usedRangeEnd: monthEnd,
+      overlapDays: daysInMonth,
+      totalCycleDaysCovered: cycleDays,
+      normalizedBudgetAmount: amount * daysInMonth / cycleDays,
+    };
   }
-  if (totalDays <= 0) totalDays = 1;
 
-  const ov = rangeOverlap(cycleStart, cycleEnd, monthStart, monthEnd);
-  const overlapDays = ov ? dayDiffInclusive(ov[0], ov[1]) : 0;
-  const ratio = overlapDays / totalDays;
-  return {
-    usedRangeStart: ov ? ov[0] : monthStart,
-    usedRangeEnd: ov ? ov[1] : monthStart,
-    overlapDays,
-    totalCycleDaysCovered: totalDays,
-    normalizedBudgetAmount: amount * ratio,
-  };
+  // custom 缺 cycleDays → 无法折算
+  if (budget.cycleType === 'custom') {
+    return null;
+  }
+
+  // once
+  if (budget.cycleType === 'once') {
+    const cycleStart = budget.startDate;
+    const cycleEnd = budget.endDate || budget.startDate;
+    let totalDays = dayDiffInclusive(cycleStart, cycleEnd);
+    if (totalDays <= 0) totalDays = 1;
+
+    const ov = rangeOverlap(cycleStart, cycleEnd, monthStart, monthEnd);
+    const overlapDays = ov ? dayDiffInclusive(ov[0], ov[1]) : 0;
+    const ratio = overlapDays / totalDays;
+    return {
+      usedRangeStart: ov ? ov[0] : monthStart,
+      usedRangeEnd: ov ? ov[1] : monthStart,
+      overlapDays,
+      totalCycleDaysCovered: totalDays,
+      normalizedBudgetAmount: amount * ratio,
+    };
+  }
+
+  // 兜底：其他未知类型按完整周期长度与当月重叠折算
+  {
+    const cycleStart = budget.startDate;
+    const cycleEnd = budget.endDate || budget.startDate;
+    let totalDays = dayDiffInclusive(cycleStart, cycleEnd);
+    if (totalDays <= 0) totalDays = 1;
+
+    const ov = rangeOverlap(cycleStart, cycleEnd, monthStart, monthEnd);
+    const overlapDays = ov ? dayDiffInclusive(ov[0], ov[1]) : 0;
+    const ratio = overlapDays / totalDays;
+    return {
+      usedRangeStart: ov ? ov[0] : monthStart,
+      usedRangeEnd: ov ? ov[1] : monthStart,
+      overlapDays,
+      totalCycleDaysCovered: totalDays,
+      normalizedBudgetAmount: amount * ratio,
+    };
+  }
 }
 
 /**

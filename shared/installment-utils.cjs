@@ -189,21 +189,13 @@ function normalizeBudgetToCurrentMonth(budget, opts = {}) {
   }
 
   if (budget.cycleType === 'weekly') {
-    // 用 getBudgetCycleWindow 取当前周窗口，按与当月的实际重叠天数折算
-    const w = getBudgetCycleWindow(budget, ref);
-    const cycleStart = w ? w.start : budget.startDate;
-    const cycleEnd = w ? w.end : budget.startDate;
-    const cycleTotalDays = 7;
-
-    const ov = _rangeOverlap(cycleStart, cycleEnd, monthStart, monthEnd);
-    const overlapDays = ov ? _dayDiffInclusive(ov[0], ov[1]) : 0;
-    const ratio = overlapDays / cycleTotalDays;
-
+    // 全月折算：amount × daysInMonth / 7
+    const ratio = daysInMonth / 7;
     return {
-      usedRangeStart: ov ? ov[0] : monthStart,
-      usedRangeEnd: ov ? ov[1] : monthStart,
-      overlapDays,
-      totalCycleDaysCovered: cycleTotalDays,
+      usedRangeStart: monthStart,
+      usedRangeEnd: monthEnd,
+      overlapDays: daysInMonth,
+      totalCycleDaysCovered: 7,
       normalizedBudgetAmount: amount * ratio,
     };
   }
@@ -213,8 +205,8 @@ function normalizeBudgetToCurrentMonth(budget, opts = {}) {
       usedRangeStart: monthStart,
       usedRangeEnd: monthEnd,
       overlapDays: daysInMonth,
-      totalCycleDaysCovered: 365.25 / 12,
-      normalizedBudgetAmount: amount / 12,
+      totalCycleDaysCovered: 365.25,
+      normalizedBudgetAmount: amount * daysInMonth / 365.25,
     };
   }
 
