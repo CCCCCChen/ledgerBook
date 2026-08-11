@@ -1,6 +1,6 @@
 {
   "name": "ledgerBook-vite-react-app",
-  "version": "6.1.0",
+  "version": "9.1.0",
   "private": true,
   "type": "module",
   "main": "main.cjs",

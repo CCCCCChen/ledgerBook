@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import {
   LayoutDashboard, AlertTriangle, Wallet, PieChart,
-  BarChart3, TrendingUp, Clock, Target, Calendar,
+  BarChart3, TrendingUp, Clock, Target,
 } from 'lucide-react';
 
 interface NavSection {
@@ -23,6 +23,7 @@ const SECTIONS: NavSection[] = [
 
 export default function DashboardNav() {
   const [activeId, setActiveId] = useState<string>('');
+  const [hovered, setHovered] = useState(false);
   const observerRef = useRef<IntersectionObserver | null>(null);
 
   useEffect(() => {
@@ -58,8 +59,10 @@ export default function DashboardNav() {
 
   return (
     <nav
-      className="fixed right-6 top-1/2 -translate-y-1/2 z-40 hidden xl:flex flex-col gap-0.5"
+      className="fixed right-6 top-1/2 -translate-y-1/2 z-40 hidden lg:flex flex-col gap-0.5"
       aria-label="仪表盘快速导航"
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
     >
       {SECTIONS.map((section) => {
         const isActive = activeId === section.id;
@@ -68,6 +71,7 @@ export default function DashboardNav() {
             key={section.id}
             type="button"
             onClick={() => handleClick(section.id)}
+            title={hovered ? undefined : section.label}
             className={`
               flex items-center gap-2 px-3 py-2 rounded-lg text-xs font-medium
               transition-all duration-200 whitespace-nowrap
@@ -80,8 +84,10 @@ export default function DashboardNav() {
             <span className={isActive ? 'text-primary' : 'text-muted-foreground'}>
               {section.icon}
             </span>
-            <span>{section.label}</span>
-            {isActive && (
+            <span className={`${hovered ? 'opacity-100 max-w-24' : 'opacity-0 max-w-0 overflow-hidden'} transition-all duration-200`}>
+              {section.label}
+            </span>
+            {isActive && hovered && (
               <span className="ml-auto h-1.5 w-1.5 rounded-full bg-primary" />
             )}
           </button>
