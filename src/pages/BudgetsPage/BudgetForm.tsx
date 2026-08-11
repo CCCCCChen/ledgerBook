@@ -121,6 +121,7 @@ export const BudgetForm: React.FC<BudgetFormProps> = ({
                 <SelectContent>
                   <SelectItem value="monthly">按月（自然月）</SelectItem>
                   <SelectItem value="weekly">按周</SelectItem>
+                  <SelectItem value="yearly">每年固定</SelectItem>
                   <SelectItem value="custom">自定义天数</SelectItem>
                   <SelectItem value="range">日期范围</SelectItem>
                   <SelectItem value="once">一次性</SelectItem>
@@ -131,6 +132,19 @@ export const BudgetForm: React.FC<BudgetFormProps> = ({
             {form.cycleType === 'once' && (
               <div className="grid gap-1.5">
                 <Label htmlFor="budget-start-date">记账日期</Label>
+                <Input
+                  id="budget-start-date"
+                  type="date"
+                  value={form.startDate}
+                  onChange={(e) => onChange({ ...form, startDate: e.target.value })}
+                  required
+                />
+              </div>
+            )}
+
+            {form.cycleType === 'yearly' && (
+              <div className="grid gap-1.5">
+                <Label htmlFor="budget-start-date">起始年份</Label>
                 <Input
                   id="budget-start-date"
                   type="date"

@@ -10,6 +10,7 @@ asar: false
 files:
   - dist/**/*
   - server/**/*
+  - shared/**/*
   - electron/**/*
   - main.cjs
   - package.json

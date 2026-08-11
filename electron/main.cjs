@@ -60,7 +60,21 @@ function loadRenderer(window) {
     return;
   }
 
-  window.loadFile(getRendererEntryPath());
+  // 生产模式：先启动内嵌 Express，再从服务器 URL 加载前端
+  // 避免 file:// 协议下 API 相对路径解析为 /E:/api/... 导致 ERR_FILE_NOT_FOUND
+  ensureServerStarted()
+    .then((url) => {
+      if (url) {
+        window.loadURL(url);
+      } else {
+        console.error('[main] 后端服务启动失败，回退到文件加载');
+        window.loadFile(getRendererEntryPath());
+      }
+    })
+    .catch((err) => {
+      console.error('[main] 后端服务启动失败:', err);
+      window.loadFile(getRendererEntryPath());
+    });
 }
 
 function buildServerEnv() {
