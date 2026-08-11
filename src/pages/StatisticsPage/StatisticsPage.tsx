@@ -130,7 +130,7 @@ export default function StatisticsPage() {
       .reduce((sum, txn) => sum + Math.abs(txn.amount), 0);
     
     // 现金安全月数（估算：假设账户总余额 / 月均支出）
-    const accountBalances = accounts.reduce((sum, acc) => sum + (acc.totalDebt || 0), 0);
+    const accountBalances = accounts.reduce((sum, acc) => sum + (acc.balance || 0), 0);
     const monthlyAverageExpense = expenses; // 简化处理
     const cashSafetyMonths = monthlyAverageExpense > 0 ? Math.max(0, accountBalances / monthlyAverageExpense) : 0;
 
@@ -260,12 +260,14 @@ export default function StatisticsPage() {
       });
     }
 
-    // 2. 预算超支
+    // 2. 预算超支（按超出比例分级：≥200% high / 150-200% medium / <150% low）
     budgetAnalysis.filter((b) => b.status === 'over').forEach((item) => {
+      const ratio = item.actualAmount / item.budgetAmount;
+      const severity: 'high' | 'medium' | 'low' = ratio >= 2 ? 'high' : ratio >= 1.5 ? 'medium' : 'low';
       items.push({
         title: `${item.category} 超预算`,
         description: `已花费 ¥${item.actualAmount.toFixed(0)} / 预算 ¥${item.budgetAmount.toFixed(0)}`,
-        severity: 'medium',
+        severity,
       });
     });
 

@@ -67,11 +67,11 @@ router.get('/:id/debt', (req, res) => {
       }
     });
 
-    // 2. 非分期信用消费：credit_card/credit 类型支出且 cash_out_date > today 的未到期还款
+    // 2. 非分期信用消费：金额为负（支出）、非分期交易、cash_out_date > today 的未到期还款
     const creditSpend = db.prepare(`
       SELECT amount, cash_out_date, date
       FROM transactions
-      WHERE account_id = ? AND type = 'credit' AND cash_out_date > ?
+      WHERE account_id = ? AND amount < 0 AND transaction_type != 'installment_bill' AND cash_out_date > ?
     `).all(req.params.id, today);
 
     creditSpend.forEach((row) => {

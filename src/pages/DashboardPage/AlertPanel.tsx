@@ -32,7 +32,7 @@ export default function AlertPanel({ alerts }: { alerts: AlertItem[] }) {
               alert.severity === 'medium' ? 'border-l-4 border-l-warning' :
               'border-l-4 border-l-muted-foreground/25'
             }>
-              <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start justify-between gap-2 col-start-2">
                 <div className="flex-1 min-w-0">
                   <AlertTitle className="flex items-center gap-2">
                     {alert.title}

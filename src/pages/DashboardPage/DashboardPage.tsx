@@ -420,12 +420,14 @@ export default function DashboardPage() {
       });
     }
 
-    // 2. 预算超支
+    // 2. 预算超支（按超出比例分级：≥200% high / 150-200% medium / <150% low）
     budgetProgressData.filter((b: any) => b.progress >= 100).forEach((item: any) => {
+      const ratio = item.actualAmount / item.budgetAmount;
+      const severity: 'high' | 'medium' | 'low' = ratio >= 2 ? 'high' : ratio >= 1.5 ? 'medium' : 'low';
       items.push({
         title: `${item.category} 超预算`,
         description: `已花费 ¥${item.actualAmount.toFixed(0)} / 预算 ¥${item.budgetAmount.toFixed(0)}`,
-        severity: 'medium',
+        severity,
         target: '/budgets',
       });
     });
