@@ -20,6 +20,7 @@ import BudgetProgress from './BudgetProgress';
 import AlertPanel from './AlertPanel';
 import RecentTransactions from './RecentTransactions';
 import DashboardSkeleton from './DashboardSkeleton';
+import DashboardNav from './DashboardNav';
 import { formatLocalISODate, formatLocalISOYearMonth } from '@/lib/date';
 import { getEffectiveTransactionDate } from '@/lib/cashflow';
 import { getDefaultTimeRange, shiftTimeRange, getMonthLabel } from '@shared/TimeRange';
@@ -906,10 +907,13 @@ export default function DashboardPage() {
         </Card>
 
         {/* ③ 财务状态概览 */}
-        <SummaryCards overview={financialOverview} />
+        <div id="overview">
+          <SummaryCards overview={financialOverview} />
+        </div>
 
         {/* D7 计划状态总览卡 */}
-        <div className="grid grid-cols-4 gap-3">
+        <div id="plan-status">
+          <div className="grid grid-cols-4 gap-3">
           {planStatusCards.map(card => {
             const isActive = planStatusFilter === card.key;
             const isUnexpected = card.key === 'unexpected';
@@ -1081,6 +1085,7 @@ export default function DashboardPage() {
             </>
           );
         })()}
+        </div>
 
         {/* ④ 本月环比 */}
         {monthOverMonth && (() => {
@@ -1118,12 +1123,17 @@ export default function DashboardPage() {
         })()}
 
         {/* ⑤ 预警中心 */}
-        <AlertPanel alerts={alerts} />
+        <div id="alerts">
+          <AlertPanel alerts={alerts} />
+        </div>
 
         {/* ⑥ 本月预算执行 */}
-        <BudgetProgress budgetData={budgetProgressData} />
+        <div id="budget">
+          <BudgetProgress budgetData={budgetProgressData} />
+        </div>
 
         {/* ⑦ 分类支出分布 */}
+        <div id="category-pie">
         <Card>
           <CardHeader><CardTitle className="text-base">分类支出分布</CardTitle></CardHeader>
           <CardContent>
@@ -1134,21 +1144,25 @@ export default function DashboardPage() {
             )}
           </CardContent>
         </Card>
+        </div>
 
         {/* ⑧ 账户支出对比 */}
-        <Card>
-          <CardHeader><CardTitle className="text-base">账户支出对比</CardTitle></CardHeader>
-          <CardContent>
-            {accountBarChartOption ? (
-              <ReactECharts option={accountBarChartOption} style={{ height: 320 }} />
-            ) : (
-              <p className="text-muted-foreground text-sm text-center py-8">暂无数据</p>
-            )}
-          </CardContent>
-        </Card>
+        <div id="account-bar">
+          <Card>
+            <CardHeader><CardTitle className="text-base">账户支出对比</CardTitle></CardHeader>
+            <CardContent>
+              {accountBarChartOption ? (
+                <ReactECharts option={accountBarChartOption} style={{ height: 320 }} />
+              ) : (
+                <p className="text-muted-foreground text-sm text-center py-8">暂无数据</p>
+              )}
+            </CardContent>
+          </Card>
+        </div>
 
         {/* ⑨ 财务趋势 */}
-        <Card>
+        <div id="trend">
+          <Card>
           <CardHeader>
             <div className="flex items-center justify-between flex-wrap gap-2">
               <CardTitle className="text-base">财务趋势</CardTitle>
@@ -1191,9 +1205,14 @@ export default function DashboardPage() {
             )}
           </CardContent>
         </Card>
+        </div>
 
         {/* ⑩ 最近交易 */}
-        <RecentTransactions transactions={trendFilteredTransactions} accounts={accounts} />
+        <div id="recent">
+          <RecentTransactions transactions={trendFilteredTransactions} accounts={accounts} />
+        </div>
+
+        <DashboardNav />
     </div>
   );
 }
